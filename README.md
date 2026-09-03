@@ -74,7 +74,8 @@ If you run [Tailscale](https://tailscale.com), I would recommend to expose Pintx
 
 Model, poll interval, items per feed and the API key can be set via environment
 variable, or (if unset) via the Settings page in the web UI, which persists them
-to the database. `PINTXOS_BASE_URL` and `PINTXOS_DATA_DIR` are environment-only.
+to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST` and
+`PINTXOS_PORT` are environment-only.
 
 | Env var | Default | Meaning |
 |---|---|---|
@@ -84,6 +85,8 @@ to the database. `PINTXOS_BASE_URL` and `PINTXOS_DATA_DIR` are environment-only.
 | `PINTXOS_ITEMS_PER_FEED` | `50` | Items kept per output feed (older ones pruned). |
 | `PINTXOS_BASE_URL` | *(none, inferred from the request)* | Base URL used to build output feed links, e.g. `https://pintxos.example.com`. |
 | `PINTXOS_DATA_DIR` | `./data` | Directory for the SQLite database. |
+| `PINTXOS_HOST` | `127.0.0.1` | Host/interface the server binds to. The Docker image sets `PINTXOS_HOST=0.0.0.0`. |
+| `PINTXOS_PORT` | `8000` | Port the server binds to. |
 
 ## Security warning
 

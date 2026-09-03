@@ -201,3 +201,7 @@ launchctl kickstart -k gui/$(id -u)/ie.boboco.pintxos   # launchd
 The SQLite database lives under `PINTXOS_DATA_DIR` and isn't touched by the
 upgrade itself, but back it up before upgrading anyway, in case a schema
 migration is involved.
+
+Polling state is kept in memory, so restarting the service simply abandons
+any in-flight poll; nothing is lost because items are saved one at a time,
+and the next scheduled run picks up where it left off.

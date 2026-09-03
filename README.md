@@ -70,6 +70,48 @@ feed URL into your RSS reader of choice. My favorite is [NetNewsWire](https://ne
 
 If you run [Tailscale](https://tailscale.com), I would recommend to expose Pintxøs [as a service](https://tailscale.com/docs/features/tailscale-services), which will give you a proper URL with https you can access easily from any RSS client in your Tailnet.
 
+## Run without Docker
+
+Pintxøs is a single Python process with a SQLite file, so it runs fine
+without a container. You'll need Python 3.12 or newer.
+
+### With uv
+
+```bash
+uv tool install git+https://github.com/janw76/pintxos
+pintxos
+```
+
+Or run it without installing anything permanently:
+
+```bash
+uvx --from git+https://github.com/janw76/pintxos pintxos
+```
+
+### With pip
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install git+https://github.com/janw76/pintxos
+.venv/bin/pintxos
+```
+
+### Settings and data
+
+Copy `.env.example` to `.env` in the directory you run `pintxos` from, and
+fill in `ANTHROPIC_API_KEY` (and any other overrides), or export the
+variables directly — real environment variables always win over `.env`. The
+SQLite database lives in `./data` relative to that directory unless you set
+`PINTXOS_DATA_DIR`, so run `pintxos` from a stable directory.
+
+By default the server binds to `127.0.0.1:8000`, i.e. only this machine can
+reach it. To reach it from other machines — for example your RSS reader on a
+phone, over Tailscale — set `PINTXOS_HOST=0.0.0.0` or to your Tailscale IP,
+or pass `--host`/`--port` on the command line. Before doing so, read the
+[Security warning](#security-warning) section below.
+
+To keep it running as a background service (systemd on Linux, launchd on
+macOS), see [docs/deploy-native.md](docs/deploy-native.md).
+
 ## Configuration
 
 Model, poll interval, items per feed and the API key can be set via environment
@@ -123,6 +165,7 @@ Even though Haiku is the cheapest model Anthropic offers today and Pintxøs avoi
 ```bash
 python -m venv .venv && .venv/bin/pip install -e .[dev]
 .venv/bin/pytest
+.venv/bin/pintxos  # or: python -m pintxos
 docker build -t pintxos .
 ```
 

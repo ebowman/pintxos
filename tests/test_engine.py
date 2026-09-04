@@ -40,6 +40,7 @@ def test_null_reporter_is_a_noop():
     r.fetching(1)
     r.summarizing(1, 1, 2)
     r.finished(1, 1, 0)
+    r.finished(1, 1, 0, filtered=3)
     r.failed(1, "x")
     r.api_key_missing(1)
 
@@ -82,7 +83,7 @@ def test_reporter_sequence_fetching_summarizing_finished(make_engine):
         reporter.fetching(feed_id)
         reporter.summarizing(feed_id, 1, 3)
         reporter.summarizing(feed_id, 2, 3)
-        reporter.finished(feed_id, 2, 1)
+        reporter.finished(feed_id, 2, 1, filtered=3)
         done_event.set()
 
     eng = make_engine(poll_fn)
@@ -100,6 +101,7 @@ def test_reporter_sequence_fetching_summarizing_finished(make_engine):
     assert feed["state"] == "idle"
     assert feed["last_result"]["inserted"] == 2
     assert feed["last_result"]["skipped"] == 1
+    assert feed["last_result"]["filtered"] == 3
     assert feed["last_result"]["duration_ms"] >= 0
 
 
@@ -270,3 +272,4 @@ def test_poll_fn_returns_without_reporting_finished_auto_finishes(make_engine):
     assert snap["feeds"][1]["state"] == "idle"
     assert snap["feeds"][1]["last_result"]["inserted"] == 0
     assert snap["feeds"][1]["last_result"]["skipped"] == 0
+    assert snap["feeds"][1]["last_result"]["filtered"] == 0

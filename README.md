@@ -133,6 +133,8 @@ to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST` and
 | `PINTXOS_HOST` | `127.0.0.1` | Host/interface the server binds to. The Docker image sets `PINTXOS_HOST=0.0.0.0`. |
 | `PINTXOS_PORT` | `8000` | Port the server binds to. |
 
+The ad filter toggle and extra patterns can also be changed on the Settings page unless the corresponding environment variable is set.
+
 ## Security warning
 
 **Pintxøs has no authentication.** Anyone who can reach the web UI can add,

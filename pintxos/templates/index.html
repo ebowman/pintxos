@@ -14,8 +14,8 @@
   <table>
     <colgroup>
       <col style="width: 20%">
-      <col style="width: 26%">
-      <col style="width: 6%">
+      <col style="width: 23%">
+      <col style="width: 9%">
       <col style="width: 12%">
       <col style="width: 10%">
       <col style="width: 10%">
@@ -45,7 +45,7 @@
             <button type="button" class="btn-tint-accent" onclick="pintxosCopy(this, '{{ feed.output_url }}')">Copy</button>
           </div>
         </td>
-        <td data-field="items">{{ feed.item_count }}</td>
+        <td class="nowrap"><div data-field="items">{{ feed.item_count }}</div><div class="muted" data-field="filtered">{% if feed.filtered_last_poll %}{{ feed.filtered_last_poll }} ads skipped{% endif %}</div></td>
         <td data-field="status" class="muted nowrap">{{ feed.status_label }}</td>
         <td data-field="last_polled" class="muted nowrap" title="{{ feed.last_polled_at or '' }}">{{ feed.last_polled_at | ago }}</td>
         <td data-field="last_error" class="error">{{ feed.last_error or "" }}</td>

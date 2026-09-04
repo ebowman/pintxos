@@ -160,6 +160,8 @@
             if (!row) return;
             var items = row.querySelector('[data-field="items"]');
             if (items) items.textContent = feed.item_count;
+            var filtered = row.querySelector('[data-field="filtered"]');
+            if (filtered) filtered.textContent = feed.filtered_last_poll ? feed.filtered_last_poll + " ads skipped" : "";
             var status = row.querySelector('[data-field="status"]');
             if (status) status.textContent = feed.status_label;
             var lastPolled = row.querySelector('[data-field="last_polled"]');

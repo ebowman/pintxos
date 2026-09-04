@@ -78,6 +78,13 @@ def status_label(state: str, progress: dict | None) -> str:
     return state
 
 
+def _filtered_last_poll(last_result: dict | None) -> int:
+    """Extract the ad-filtered count from an engine last_result, defaulting to 0."""
+    if not last_result:
+        return 0
+    return int(last_result.get("filtered") or 0)
+
+
 # Singleton in-process poll engine: one queue + worker thread for the whole
 # app. poll_feed already has the (feed_id, reporter) signature the engine
 # expects, so it's injected directly.
@@ -201,6 +208,7 @@ def index(request: Request) -> Response:
         feed["last_result"] = eng["last_result"] if eng else None
         feed["status_label"] = status_label(feed["state"], feed["progress"])
         feed["active"] = feed["state"] in ACTIVE_STATES
+        feed["filtered_last_poll"] = _filtered_last_poll(feed["last_result"])
         feeds.append(feed)
     flash = pop_flash(request)
     response = templates.TemplateResponse(
@@ -366,6 +374,7 @@ def api_status() -> Response:
         eng = engine_feeds.get(feed_id)
         state = eng["state"] if eng else "idle"
         progress = eng["progress"] if eng else None
+        last_result = eng["last_result"] if eng else None
         feeds.append(
             {
                 "id": feed_id,
@@ -373,13 +382,14 @@ def api_status() -> Response:
                 "url": row["url"],
                 "state": state,
                 "progress": progress,
-                "last_result": eng["last_result"] if eng else None,
+                "last_result": last_result,
                 "item_count": row["item_count"],
                 "last_polled_at": row["last_polled_at"],
                 "last_polled_ago": ago(row["last_polled_at"]),
                 "last_error": row["last_error"],
                 "status_label": status_label(state, progress),
                 "active": state in ACTIVE_STATES,
+                "filtered_last_poll": _filtered_last_poll(last_result),
             }
         )
 

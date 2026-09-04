@@ -318,6 +318,81 @@ def test_base_script_has_live_status_wiring():
     assert "visibilitychange" in page
 
 
+def test_base_script_updates_filtered_ads_field():
+    with TestClient(app) as c:
+        page = c.get("/").text
+
+    assert "ads skipped" in page
+    assert '[data-field="filtered"]' in page
+
+
+def test_index_shows_filtered_ads_skipped_count(monkeypatch):
+    import re
+
+    import pintxos.app as app_module
+
+    def _filtering_poll(feed_id, reporter):
+        reporter.finished(feed_id, 1, 0, filtered=3)
+        return True
+
+    monkeypatch.setattr(app_module.engine, "_poll_fn", _filtering_poll)
+
+    import threading
+    import time
+
+    def _wait_until(predicate, timeout=2.0, interval=0.02):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(interval)
+        return predicate()
+
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        c.post("/feeds/1/poll", follow_redirects=False)
+
+        assert _wait_until(
+            lambda: app_module.engine.snapshot()["feeds"].get(1, {}).get("state") == "idle"
+        )
+
+        page = c.get("/").text
+
+    row_match = re.search(r'<tr data-feed-id="1">.*?</tr>', page, re.DOTALL)
+    assert row_match is not None
+    row_html = row_match.group(0)
+
+    filtered_match = re.search(
+        r'data-field="filtered"[^>]*>(.*?)</div>', row_html, re.DOTALL
+    )
+    assert filtered_match is not None
+    assert filtered_match.group(1).strip() == "3 ads skipped"
+
+    # The fake poll_fn reports finished() but doesn't actually insert DB rows,
+    # so item_count stays at 0; this only confirms the items field still renders.
+    items_match = re.search(r'data-field="items"[^>]*>(.*?)</div>', row_html, re.DOTALL)
+    assert items_match is not None
+    assert items_match.group(1).strip() == "0"
+
+
+def test_index_filtered_ads_empty_when_zero(quiet_engine):
+    import re
+
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/").text
+
+    row_match = re.search(r'<tr data-feed-id="1">.*?</tr>', page, re.DOTALL)
+    assert row_match is not None
+    row_html = row_match.group(0)
+
+    filtered_match = re.search(
+        r'data-field="filtered"[^>]*>(.*?)</div>', row_html, re.DOTALL
+    )
+    assert filtered_match is not None
+    assert filtered_match.group(1).strip() == ""
+
+
 def test_flash_error_shown_once_then_gone(quiet_engine):
     with TestClient(app) as c:
         resp = c.post("/feeds", data={"url": "ftp://nope"}, follow_redirects=False)

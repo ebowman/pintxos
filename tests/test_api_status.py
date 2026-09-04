@@ -96,6 +96,37 @@ def test_status_feed_entries_include_status_label_and_active_keys(quiet_engine):
     assert "active" in feed
 
 
+def test_status_filtered_last_poll_zero_with_no_last_result(quiet_engine):
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.get("/api/status")
+
+    body = resp.json()
+    feed = body["feeds"][0]
+    assert feed["filtered_last_poll"] == 0
+
+
+def test_status_filtered_last_poll_reflects_last_result(monkeypatch):
+    def _filtering_poll(feed_id, reporter):
+        reporter.finished(feed_id, 1, 0, filtered=3)
+        return True
+
+    monkeypatch.setattr(app_module.engine, "_poll_fn", _filtering_poll)
+
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        c.post("/feeds/1/poll", follow_redirects=False)
+
+        assert _wait_until(
+            lambda: app_module.engine.snapshot()["feeds"].get(1, {}).get("state") == "idle"
+        )
+
+        status = c.get("/api/status").json()
+
+    feed = next(f for f in status["feeds"] if f["id"] == 1)
+    assert feed["filtered_last_poll"] == 3
+
+
 def test_poll_now_redirect_location_is_root(quiet_engine):
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)

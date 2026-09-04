@@ -12,6 +12,7 @@ import httpx
 import trafilatura
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from pintxos import adfilter
 from pintxos.config import get_setting
 from pintxos.db import db, now
 from pintxos.engine import NullReporter, Reporter
@@ -78,6 +79,18 @@ def _entry_sort_key(entry):
     return (0, tuple(-value for value in parsed[:6])) if parsed else (1, ())
 
 
+def _filter_ads_enabled(conn) -> bool:
+    return get_setting("PINTXOS_FILTER_ADS", conn).lower() in {"1", "true", "yes", "on"}
+
+
+def _extra_ad_patterns(conn) -> list[re.Pattern]:
+    try:
+        return adfilter.compile_patterns(get_setting("PINTXOS_AD_TITLE_PATTERNS", conn))
+    except ValueError as e:
+        log.warning("invalid PINTXOS_AD_TITLE_PATTERNS, using built-in rules only: %s", e)
+        return []
+
+
 def _set_error(feed_id: int, message: str, polled: bool = True) -> None:
     with db() as conn:
         if polled:
@@ -110,6 +123,8 @@ def poll_feed(feed_id: int, reporter: Reporter | None = None) -> bool:
             return True
         url, feed_title = feed["url"], feed["title"]
         limit = int(get_setting("PINTXOS_ITEMS_PER_FEED", conn))
+        filter_ads = _filter_ads_enabled(conn)
+        extra_ad_patterns = _extra_ad_patterns(conn) if filter_ads else []
 
     reporter.fetching(feed_id)
 
@@ -141,14 +156,33 @@ def poll_feed(feed_id: int, reporter: Reporter | None = None) -> bool:
         guid = entry.get("id") or entry.get("link")
         if guid and guid not in seen:
             new_entries.append(entry)
-    total = len(new_entries)
+
+    # Ad/coupon entries are filtered before fetch/summarize, but never inserted or
+    # otherwise recorded as seen -- they are simply re-evaluated on the next poll.
+    filtered = []
+    kept = new_entries
+    if filter_ads:
+        kept = []
+        for entry in new_entries:
+            reason = adfilter.is_ad(entry, extra_ad_patterns)
+            if reason is None:
+                kept.append(entry)
+            else:
+                filtered.append(entry)
+                log.debug(
+                    "feed %s: skipping ad (%s): %s", feed_id, reason, entry.get("title", "")
+                )
+        if filtered:
+            log.info("feed %s: filtered %d ad entries", feed_id, len(filtered))
+
+    total = len(kept)
     done = 0
     inserted = 0
     skipped = 0
     if total > 0:
         reporter.summarizing(feed_id, done, total)
 
-    for entry in new_entries:
+    for entry in kept:
         guid = entry.get("id") or entry.get("link")
         link = entry.get("link") or guid
 
@@ -200,7 +234,7 @@ def poll_feed(feed_id: int, reporter: Reporter | None = None) -> bool:
             "UPDATE feeds SET last_polled_at = ?, last_error = NULL WHERE id = ?",
             (now(), feed_id),
         )
-    reporter.finished(feed_id, inserted=inserted, skipped=skipped)
+    reporter.finished(feed_id, inserted=inserted, skipped=skipped, filtered=len(filtered))
     return True
 
 

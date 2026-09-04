@@ -14,6 +14,7 @@ from pintxos.summarize import MissingApiKey, SummarizeError
 
 FEED_URL = "https://example.com/feed.xml"
 SAMPLE = (Path(__file__).parent / "fixtures" / "sample.xml").read_bytes()
+SAMPLE_WITH_AD = (Path(__file__).parent / "fixtures" / "sample_with_ad.xml").read_bytes()
 
 
 class RecordingReporter:
@@ -28,8 +29,8 @@ class RecordingReporter:
     def summarizing(self, feed_id: int, done: int, total: int) -> None:
         self.events.append(("summarizing", feed_id, done, total))
 
-    def finished(self, feed_id: int, inserted: int, skipped: int) -> None:
-        self.events.append(("finished", feed_id, inserted, skipped))
+    def finished(self, feed_id: int, inserted: int, skipped: int, filtered: int = 0) -> None:
+        self.events.append(("finished", feed_id, inserted, skipped, filtered))
 
     def failed(self, feed_id: int, message: str) -> None:
         self.events.append(("failed", feed_id, message))
@@ -64,6 +65,26 @@ def calls(monkeypatch):
     def fake_get(url):
         if url == FEED_URL:
             return FakeResponse(SAMPLE)
+        raise AssertionError(f"unexpected GET {url}")
+
+    def fake_summarize(text, original_title, url):
+        seen.append((text, original_title, url))
+        return f"HEADLINE {len(seen)}", f"summary of {original_title}"
+
+    monkeypatch.setattr(poll, "_get", fake_get)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: None)
+    monkeypatch.setattr(poll, "summarize", fake_summarize)
+    return seen
+
+
+@pytest.fixture
+def calls_with_ad(monkeypatch):
+    """Like `calls`, but serves a feed whose third entry is tagged as a coupon ad."""
+    seen: list[tuple[str, str, str]] = []
+
+    def fake_get(url):
+        if url == FEED_URL:
+            return FakeResponse(SAMPLE_WITH_AD)
         raise AssertionError(f"unexpected GET {url}")
 
     def fake_summarize(text, original_title, url):
@@ -220,7 +241,7 @@ def test_reporter_first_poll_reports_fetching_summarizing_finished(feed_id, call
         ("summarizing", feed_id, 1, 3),
         ("summarizing", feed_id, 2, 3),
         ("summarizing", feed_id, 3, 3),
-        ("finished", feed_id, 3, 0),
+        ("finished", feed_id, 3, 0, 0),
     ]
 
 
@@ -230,7 +251,7 @@ def test_reporter_second_poll_reports_no_summarizing(feed_id, calls):
     poll.poll_feed(feed_id, reporter)
     assert reporter.events == [
         ("fetching", feed_id),
-        ("finished", feed_id, 0, 0),
+        ("finished", feed_id, 0, 0, 0),
     ]
 
 
@@ -256,7 +277,7 @@ def test_reporter_summarize_error_still_finishes_with_skip(feed_id, calls, monke
     summarizing_events = [e for e in reporter.events if e[0] == "summarizing"]
     assert len(summarizing_events) == 4
     assert reporter.events[0] == ("fetching", feed_id)
-    assert reporter.events[-1] == ("finished", feed_id, 2, 1)
+    assert reporter.events[-1] == ("finished", feed_id, 2, 1, 0)
 
 
 def test_reporter_missing_api_key_reports_api_key_missing_only(feed_id, calls, monkeypatch):
@@ -298,3 +319,76 @@ def test_engine_integration_poll_feed_via_engine(feed_id, calls):
         assert feed_snap["last_result"]["inserted"] == 3
     finally:
         engine.stop()
+
+
+def test_ad_entry_filtered_before_summarize(feed_id, calls_with_ad):
+    reporter = RecordingReporter()
+    poll.poll_feed(feed_id, reporter)
+    summarizing_events = [e for e in reporter.events if e[0] == "summarizing"]
+    assert summarizing_events == [
+        ("summarizing", feed_id, 0, 2),
+        ("summarizing", feed_id, 1, 2),
+        ("summarizing", feed_id, 2, 2),
+    ]
+    assert reporter.events[-1] == ("finished", feed_id, 2, 0, 1)
+    assert len(calls_with_ad) == 2
+    links = [row["link"] for row in items()]
+    assert "https://example.com/coupons" not in links
+
+
+def test_filter_ads_disabled_summarizes_everything(feed_id, calls_with_ad, monkeypatch):
+    monkeypatch.setenv("PINTXOS_FILTER_ADS", "0")
+    reporter = RecordingReporter()
+    poll.poll_feed(feed_id, reporter)
+    assert len(calls_with_ad) == 3
+    assert reporter.events[-1] == ("finished", feed_id, 3, 0, 0)
+
+
+def test_invalid_extra_ad_pattern_logs_warning_and_keeps_builtin_rules(
+    feed_id, calls_with_ad, monkeypatch, caplog
+):
+    monkeypatch.setenv("PINTXOS_AD_TITLE_PATTERNS", "(")
+    with caplog.at_level("WARNING"):
+        reporter = RecordingReporter()
+        poll.poll_feed(feed_id, reporter)
+    assert "invalid PINTXOS_AD_TITLE_PATTERNS" in caplog.text
+    assert reporter.events[-1] == ("finished", feed_id, 2, 0, 1)
+    assert len(calls_with_ad) == 2
+
+
+def test_second_poll_re_evaluates_ad_and_does_not_store_it(feed_id, calls_with_ad):
+    poll.poll_feed(feed_id)
+    calls_with_ad.clear()
+    reporter = RecordingReporter()
+    poll.poll_feed(feed_id, reporter)
+    assert len(calls_with_ad) == 0
+    assert reporter.events == [
+        ("fetching", feed_id),
+        ("finished", feed_id, 0, 0, 1),
+    ]
+
+
+def test_extra_pattern_filters_entry_not_caught_by_builtin_rules(feed_id, monkeypatch):
+    xml = SAMPLE_WITH_AD.decode().replace(
+        "Groupon Promo Codes: 60% Off in September 2026",
+        "Best Labor Day Deals 2026",
+    ).replace(
+        "<category>coupons</category>", ""
+    ).encode()
+
+    def fake_get(url):
+        if url == FEED_URL:
+            return FakeResponse(xml)
+        raise AssertionError(f"unexpected GET {url}")
+
+    def fake_summarize(text, original_title, url):
+        return "HEADLINE", f"summary of {original_title}"
+
+    monkeypatch.setattr(poll, "_get", fake_get)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: None)
+    monkeypatch.setattr(poll, "summarize", fake_summarize)
+    monkeypatch.setenv("PINTXOS_AD_TITLE_PATTERNS", "best .* deals")
+
+    reporter = RecordingReporter()
+    poll.poll_feed(feed_id, reporter)
+    assert reporter.events[-1] == ("finished", feed_id, 2, 0, 1)

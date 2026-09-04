@@ -53,7 +53,7 @@ class Reporter(Protocol):
 
     def summarizing(self, feed_id: int, done: int, total: int) -> None: ...
 
-    def finished(self, feed_id: int, inserted: int, skipped: int) -> None: ...
+    def finished(self, feed_id: int, inserted: int, skipped: int, filtered: int = 0) -> None: ...
 
     def failed(self, feed_id: int, message: str) -> None: ...
 
@@ -69,7 +69,7 @@ class NullReporter:
     def summarizing(self, feed_id: int, done: int, total: int) -> None:
         pass
 
-    def finished(self, feed_id: int, inserted: int, skipped: int) -> None:
+    def finished(self, feed_id: int, inserted: int, skipped: int, filtered: int = 0) -> None:
         pass
 
     def failed(self, feed_id: int, message: str) -> None:
@@ -244,7 +244,7 @@ class PollEngine:
             self._progress[feed_id] = (done, total)
             log.info("feed %s: %s -> %s (%s/%s)", feed_id, frm, to, done, total)
 
-    def finished(self, feed_id: int, inserted: int, skipped: int) -> None:
+    def finished(self, feed_id: int, inserted: int, skipped: int, filtered: int = 0) -> None:
         with self._lock:
             frm = self._state_of(feed_id)
             to = FeedState.idle
@@ -256,10 +256,14 @@ class PollEngine:
                 "finished_at": now(),
                 "inserted": inserted,
                 "skipped": skipped,
+                "filtered": filtered,
                 "duration_ms": duration_ms,
             }
             self._progress.pop(feed_id, None)
-            log.info("feed %s: %s -> %s (inserted=%s skipped=%s)", feed_id, frm, to, inserted, skipped)
+            log.info(
+                "feed %s: %s -> %s (inserted=%s skipped=%s filtered=%s)",
+                feed_id, frm, to, inserted, skipped, filtered,
+            )
 
     def failed(self, feed_id: int, message: str) -> None:
         with self._lock:

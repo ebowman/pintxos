@@ -10,7 +10,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from apscheduler.jobstores.base import JobLookupError
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from pintxos import adfilter
 from pintxos.config import data_dir, get_setting, is_truthy
-from pintxos.cookies import cookie_path, get_jar, load_jar, summary
+from pintxos.cookies import cookie_path, get_jar, has_cookies_for, load_jar, summary
 from pintxos.db import db, init_db, now
 from pintxos.feed_out import render_rss
 from pintxos.poll import _status as poll_status
@@ -121,12 +121,41 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1 AND auth = 'missing'",
             (feed_id,),
         ).fetchone()[0]
+        auth_row = conn.execute(
+            "SELECT SUM(auth = 'used') AS used, SUM(auth = 'failed') AS failed, "
+            "SUM(auth = 'missing') AS missing FROM items WHERE feed_id = ?",
+            (feed_id,),
+        ).fetchone()
+        auth_used = auth_row["used"] or 0
+        auth_failed = auth_row["failed"] or 0
+        auth_missing = auth_row["missing"] or 0
+        latest_link = conn.execute(
+            "SELECT link FROM items WHERE feed_id = ? ORDER BY published_at DESC, id DESC LIMIT 1",
+            (feed_id,),
+        ).fetchone()
     try:
         last_filtered = json.loads(feed["last_filtered"] or "[]")
         if not isinstance(last_filtered, list):
             raise ValueError("last_filtered is not a list")
     except ValueError:
         last_filtered = []
+
+    article_host = urlparse(latest_link["link"]).hostname if latest_link else None
+    domain = article_host or urlparse(feed["url"]).hostname or ""
+
+    jar = get_jar()
+    cookies_loaded_for_domain = bool(jar) and has_cookies_for(jar, f"https://{domain}/")
+
+    domain_expiry = None
+    if jar is not None and domain:
+        best_match_len = -1
+        for entry in summary(jar):
+            cookie_domain = entry["domain"].lstrip(".")
+            if domain == cookie_domain or domain.endswith("." + cookie_domain):
+                if len(cookie_domain) > best_match_len:
+                    best_match_len = len(cookie_domain)
+                    domain_expiry = entry["expires"]
+
     return templates.TemplateResponse(
         request,
         "feed_edit.html",
@@ -138,6 +167,12 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "last_filtered": last_filtered,
             "fallback_count": fallback_count,
             "missing_count": missing_count,
+            "auth_used": auth_used,
+            "auth_failed": auth_failed,
+            "auth_missing": auth_missing,
+            "domain": domain,
+            "cookies_loaded_for_domain": cookies_loaded_for_domain,
+            "domain_expiry": domain_expiry,
         },
     )
 
@@ -180,15 +215,17 @@ def _load_feed_rows(request: Request, feed_id: int | None = None) -> list[dict]:
     Shared by index() and the single-row endpoint so both render identical rows.
     """
     sql = (
-        "SELECT f.*, "
-        "(SELECT COUNT(*) FROM items WHERE items.feed_id = f.id) AS item_count "
-        "FROM feeds f"
+        "SELECT f.*, COUNT(i.id) AS item_count, "
+        "SUM(i.auth = 'used') AS auth_used, "
+        "SUM(i.auth = 'failed') AS auth_failed, "
+        "SUM(i.auth = 'missing') AS auth_missing "
+        "FROM feeds f LEFT JOIN items i ON i.feed_id = f.id"
     )
     params: tuple = ()
     if feed_id is not None:
         sql += " WHERE f.id = ?"
         params = (feed_id,)
-    sql += " ORDER BY f.id"
+    sql += " GROUP BY f.id ORDER BY f.id"
     with db() as conn:
         rows = conn.execute(sql, params).fetchall()
         base_url = get_setting("PINTXOS_BASE_URL", conn) or str(request.base_url).rstrip("/")
@@ -196,6 +233,9 @@ def _load_feed_rows(request: Request, feed_id: int | None = None) -> list[dict]:
     for row in rows:
         feed = dict(row)
         feed["output_url"] = f"{base_url}/feeds/{feed['id']}.xml"
+        feed["auth_used"] = feed["auth_used"] or 0
+        feed["auth_failed"] = feed["auth_failed"] or 0
+        feed["auth_missing"] = feed["auth_missing"] or 0
         feeds.append(feed)
     return feeds
 

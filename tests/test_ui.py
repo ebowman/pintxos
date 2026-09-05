@@ -1170,3 +1170,132 @@ def test_cookies_upload_never_echoes_value():
 
         page2 = c.get("/settings").text
         assert "UPLOADSECRET42" not in page2
+
+
+def _insert_item(feed_id, guid, *, auth=None, link="https://www.example.com/a", published_at=None):
+    from pintxos.db import now as db_now
+
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
+            "headline, summary, fallback, auth, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                feed_id,
+                guid,
+                link,
+                "Original",
+                published_at or db_now(),
+                "Headline",
+                "Summary.",
+                0,
+                auth,
+                db_now(),
+            ),
+        )
+
+
+def test_index_shows_login_indicator_counts(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        c.post("/feeds", data={"url": "https://example.org/feed.xml"}, follow_redirects=False)
+
+        _insert_item(1, "g1", auth="used")
+        _insert_item(1, "g2", auth="used")
+        _insert_item(1, "g3", auth="missing")
+        _insert_item(1, "g4", auth="failed")
+        _insert_item(1, "g5", auth=None)
+
+        page = c.get("/").text
+
+    assert "2 via login" in page
+    assert "1 need login" in page
+    assert "1 login failed" in page
+    assert "<div>5</div>" in page  # item_count for feed 1
+
+    # feed 2 has no items: none of the three labels appear for it. Since feed 1's row
+    # already contains these labels, check they appear exactly once each (only feed 1's row).
+    assert page.count("via login") == 1
+    assert page.count("need login") == 1
+    assert page.count("login failed") == 1
+
+
+def test_index_column_count_unchanged_by_login_indicators(monkeypatch):
+    """The Items cell gains extra muted lines, not a new column."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="used")
+        page = c.get("/").text
+
+    widths = re.findall(r'<col style="width: (\d+)%">', page)
+    assert len(widths) == 7
+    assert page.count("<th>") == 7
+
+
+def test_feed_edit_page_shows_login_section_with_sentences(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="used")
+        _insert_item(1, "g2", auth="used")
+        _insert_item(1, "g3", auth="missing")
+        _insert_item(1, "g4", auth="failed")
+
+        # No cookies.txt: "Add your subscription cookies" link is present.
+        page = c.get("/feeds/1").text
+
+    assert "<h2>Login</h2>" in page
+    assert "2 items were fetched with your subscription." in page
+    assert "1 item fell back to the feed excerpt and may need a login." in page
+    assert "Add your subscription cookies" in page
+    assert '<a href="/settings">Settings page</a>' in page
+    assert "1 item fell back although cookies were loaded for this site at the time; none are loaded for www.example.com now." in page
+    assert "fell back even though cookies for this site are loaded" not in page
+    assert "are session cookies with no expiry date" not in page
+
+
+def test_feed_edit_page_login_section_reflects_loaded_cookies(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="missing")
+        _insert_item(1, "g2", auth="failed")
+
+        _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+
+        page = c.get("/feeds/1").text
+
+    assert "<h2>Login</h2>" in page
+    assert "Add your subscription cookies" not in page
+    assert "1 item fell back even though cookies for this site are loaded; they may have expired." in page
+    assert "Cookies for www.example.com expire 2100-01-01." in page
+
+
+def test_feed_edit_page_login_section_session_cookie_no_expiry(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="failed")
+
+        # Session cookie: empty expiry field (0 in Netscape format == no expiry).
+        _write_cookies([".example.com\tTRUE\t/\tFALSE\t0\tsid\tabc"])
+
+        page = c.get("/feeds/1").text
+
+    assert "<h2>Login</h2>" in page
+    assert "1 item fell back even though cookies for this site are loaded; they may have expired." in page
+    assert "The cookies for www.example.com are session cookies with no expiry date." in page
+
+
+def test_feed_edit_page_no_login_section_when_auth_all_null(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth=None)
+        _insert_item(1, "g2", auth=None)
+
+        page = c.get("/feeds/1").text
+
+    assert "<h2>Login</h2>" not in page

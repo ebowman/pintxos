@@ -53,4 +53,37 @@
 
   <button type="submit" class="btn-primary">Save</button>
 </form>
+
+<h2>Subscription cookies</h2>
+<p>Pintxøs sends these cookies only to their own sites when it fetches an article, so paywalled feeds you subscribe to are summarized from the full story. Loaded from <code>{{ cookie_file }}</code>.</p>
+{% if not cookie_domains %}
+<p class="muted">No cookies.txt found.</p>
+{% else %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Domain</th>
+        <th>Cookies</th>
+        <th>Earliest expiry</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in cookie_domains %}
+      <tr>
+        <td>{{ entry.domain }}</td>
+        <td>{{ entry.count }}</td>
+        <td>
+          {% if entry.expires %}
+            {{ entry.expires }}{% if entry.expires <= cookie_soon %} <span class="muted">(expires soon)</span>{% endif %}
+          {% else %}
+            session
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 {% endblock %}

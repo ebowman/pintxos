@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 
 from pintxos import adfilter
 from pintxos.config import get_setting, is_truthy
+from pintxos.cookies import cookie_path, get_jar, summary
 from pintxos.db import db, init_db, now
 from pintxos.feed_out import render_rss
 from pintxos.poll import _status as poll_status
@@ -273,6 +274,10 @@ def settings_page(request: Request) -> Response:
     filter_ads_env = env_pinned("PINTXOS_FILTER_ADS")
     patterns_env = env_pinned("PINTXOS_AD_TITLE_PATTERNS")
     keep_patterns_env = env_pinned("PINTXOS_AD_KEEP_PATTERNS")
+    jar = get_jar()
+    cookie_domains = summary(jar) if jar else []
+    cookie_file = str(cookie_path())
+    cookie_soon = (datetime.now(UTC) + timedelta(days=7)).date().isoformat()
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -288,6 +293,9 @@ def settings_page(request: Request) -> Response:
             "patterns_env": patterns_env,
             "ad_keep_patterns": ad_keep_patterns,
             "keep_patterns_env": keep_patterns_env,
+            "cookie_domains": cookie_domains,
+            "cookie_file": cookie_file,
+            "cookie_soon": cookie_soon,
         },
     )
 

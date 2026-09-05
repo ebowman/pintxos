@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
 import pintxos.app as app_module
 from pintxos.app import app
-from pintxos.config import get_setting
+from pintxos.config import data_dir, get_setting
 from pintxos.db import db
+
+# Well into the future so cookies are never seen as expired.
+FUTURE_EXPIRY = 4102444800  # 2100-01-01T00:00:00Z
+
+
+def _write_cookies(lines):
+    path = data_dir() / "cookies.txt"
+    path.write_text("# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n")
 
 
 def test_add_feed_appears_in_list(monkeypatch):
@@ -952,3 +961,58 @@ def test_feed_edit_page_malformed_last_filtered_does_not_500(monkeypatch):
         resp = c.get("/feeds/1")
     assert resp.status_code == 200
     assert "Nothing filtered at last poll" in resp.text
+
+
+def test_settings_page_no_cookies_file_shows_placeholder():
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert "No cookies.txt found." in page
+
+
+def test_settings_page_lists_cookie_domains_and_counts():
+    _write_cookies(
+        [
+            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
+            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef",
+            f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi",
+        ]
+    )
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert ".ft.com" in page
+    assert ".economist.com" in page
+    assert "2100-01-01" in page
+    assert "expires soon" not in page
+    # Domain counts appear as table cells.
+    assert re.search(r"<td>2</td>", page)
+    assert re.search(r"<td>1</td>", page)
+
+
+def test_settings_page_flags_cookie_expiring_soon():
+    soon_expiry = int((datetime.now(UTC) + timedelta(days=3)).timestamp())
+    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{soon_expiry}\tsid\tabc"])
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert "expires soon" in page
+
+
+def test_settings_page_never_renders_cookie_value():
+    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tSECRETVALUE123"])
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert "SECRETVALUE123" not in page
+
+
+def test_settings_cookies_section_is_outside_the_settings_form():
+    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    form_start = page.index('action="/settings"')
+    form_close = page.index("</form>", form_start)
+    cookies_heading = page.index("Subscription cookies")
+    assert form_close < cookies_heading

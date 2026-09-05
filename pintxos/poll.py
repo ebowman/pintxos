@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import UTC, datetime, timedelta
 from http.cookiejar import MozillaCookieJar
 
+import curl_cffi.requests
 import feedparser
-import httpx
 import trafilatura
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from pintxos import adfilter
-from pintxos.config import get_setting, is_truthy
+from pintxos.config import DEFAULTS, get_setting, is_truthy
 from pintxos.cookies import get_jar, has_cookies_for
 from pintxos.db import db, now
 from pintxos.stats import word_count
@@ -27,10 +28,30 @@ USER_AGENT = "pintxos/0.1 (+https://github.com/janw76/pintxos)"
 MIN_ARTICLE_CHARS = 200
 MIN_FALLBACK_CHARS = 50
 
+
+def _make_client(profile: str | None) -> curl_cffi.requests.Session:
+    """Build a curl_cffi session, optionally impersonating a browser's TLS/HTTP fingerprint.
+
+    Some sites (e.g. Cloudflare-managed challenges) fingerprint the TLS handshake and
+    reject plain httpx/requests clients regardless of cookies or User-Agent header.
+    curl_cffi's `impersonate=` reproduces a real browser's TLS/HTTP2 fingerprint and
+    also supplies that browser's own User-Agent, so we must not override it in that
+    case -- doing so would make the header disagree with the fingerprint. When
+    impersonation is disabled (`profile` falsy), we set our own User-Agent instead.
+    """
+    headers = {} if profile else {"User-Agent": USER_AGENT}
+    return curl_cffi.requests.Session(
+        impersonate=profile or None, timeout=20, allow_redirects=True, headers=headers
+    )
+
+
 # ponytail: one shared client and one scheduler at module level. The scheduler runs a
 # single worker thread, so every poll - scheduled or manual - is serialized by
 # construction; ceiling is multi-process deployments (each process would poll).
-_client = httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=20, follow_redirects=True)
+# PINTXOS_IMPERSONATE is environment-only (see config.DEFAULTS), read directly from
+# the environment here rather than via get_setting so building the client at import
+# time never touches the DB.
+_client = _make_client(os.environ.get("PINTXOS_IMPERSONATE", DEFAULTS["PINTXOS_IMPERSONATE"]))
 scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
 
 # Which jar object (if any) is currently installed on `_client.cookies`. Compared by
@@ -41,19 +62,22 @@ _client_jar: MozillaCookieJar | None = None
 _status: dict[int, str] = {}
 
 
-def _get(url: str) -> httpx.Response:
+def _get(url: str) -> curl_cffi.requests.Response:
     """Single seam for HTTP GETs so tests can monkeypatch one thing."""
     global _client_jar
     jar = get_jar()
     if jar is not _client_jar:
-        # httpx matches cookies to each request's domain/path, so installing the jar
-        # on the shared client sends each cookie only to its own site; swapping on
-        # identity change picks up a re-exported file (get_jar() reloads on
-        # mtime/size change) without a restart. Response cookies (e.g. refreshed
-        # session tokens) accumulate in the installed jar for the life of the
-        # process, which is the desired behaviour for logins; nothing is written
-        # back to disk.
-        _client.cookies = httpx.Cookies(jar) if jar is not None else httpx.Cookies()
+        # curl_cffi's Cookies wraps a stdlib http.cookiejar.CookieJar and matches
+        # cookies to each request's domain/path the same way http.cookiejar/httpx do,
+        # so installing the jar on the shared session sends each cookie only to its
+        # own site; swapping on identity change picks up a re-exported file
+        # (get_jar() reloads on mtime/size change) without a restart. Response
+        # cookies (e.g. refreshed session tokens) accumulate in the installed jar for
+        # the life of the process, which is the desired behaviour for logins;
+        # nothing is written back to disk.
+        _client.cookies = (
+            curl_cffi.requests.Cookies(jar) if jar is not None else curl_cffi.requests.Cookies()
+        )
         _client_jar = jar
     return _client.get(url)
 

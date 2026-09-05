@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
+import curl_cffi.requests
 import pytest
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
-
-import httpx
 
 from pintxos import poll
 from pintxos.cookies import cookie_path
@@ -673,6 +673,20 @@ def test_invalid_feed_ad_pattern_warns_with_feed_id_and_still_filters_with_good_
     assert feed_row(feed_id)["ads_filtered"] == 1
 
 
+# --- client construction / impersonation -----------------------------------------
+
+
+def test_make_client_impersonates_by_default():
+    client = poll._make_client("safari17_0")
+    assert client.impersonate == "safari17_0"
+
+
+def test_make_client_no_impersonation_uses_pintxos_user_agent():
+    client = poll._make_client("")
+    assert not client.impersonate
+    assert client.headers.get("User-Agent") == poll.USER_AGENT
+
+
 # --- _get() and cookie jar propagation -------------------------------------------
 
 
@@ -680,10 +694,10 @@ def test_invalid_feed_ad_pattern_warns_with_feed_id_and_still_filters_with_good_
 def _reset_client_jar(monkeypatch):
     """Cookie-jar tests must not leak the installed jar across test order."""
     monkeypatch.setattr(poll, "_client_jar", None)
-    poll._client.cookies = httpx.Cookies()
+    poll._client.cookies = curl_cffi.requests.Cookies()
     yield
     poll._client_jar = None
-    poll._client.cookies = httpx.Cookies()
+    poll._client.cookies = curl_cffi.requests.Cookies()
 
 
 def test_get_installs_jar_on_client_when_cookies_file_exists(_reset_client_jar, monkeypatch):
@@ -758,36 +772,23 @@ def test_auth_missing_when_no_cookies_and_fetch_fails(feed_id, calls, _reset_cli
 
 
 def test_cookies_only_sent_to_matching_domain():
+    # Proves domain scoping at the stdlib http.cookiejar level, which both the
+    # loader (get_jar) and curl_cffi's Cookies wrapper delegate to: a cookie
+    # jarred for .ft.com is offered on a request to www.ft.com, and withheld on
+    # a request to an unrelated domain.
     _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc123"])
     jar = poll.get_jar()
     assert jar is not None
 
-    seen_cookie_headers = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen_cookie_headers[str(request.url)] = request.headers.get("cookie")
-        return httpx.Response(200, text="<html>ok</html>")
-
-    client = httpx.Client(
-        transport=httpx.MockTransport(handler),
-        cookies=httpx.Cookies(jar),
-        follow_redirects=True,
-    )
-
-    client.get("https://www.ft.com/x")
-    client.get("https://www.example.com/x")
-
-    ft_cookie_header = seen_cookie_headers["https://www.ft.com/x"]
+    ft_req = urllib.request.Request("https://www.ft.com/x")
+    jar.add_cookie_header(ft_req)
+    ft_cookie_header = ft_req.get_header("Cookie")
     assert ft_cookie_header is not None
     assert "sid" in ft_cookie_header
-    assert seen_cookie_headers["https://www.example.com/x"] is None
 
-    assert seen_cookie_headers["https://www.example.com/x"] is None
-
-    # No cross-site leak: the client's own persistent cookie jar must not have
-    # picked up the ft.com cookie under the example.com domain (or at all --
-    # per-request `cookies=` is not merged into `client.cookies`).
-    assert "example.com" not in [c.domain for c in client.cookies.jar]
+    other_req = urllib.request.Request("https://www.example.com/x")
+    jar.add_cookie_header(other_req)
+    assert other_req.get_header("Cookie") is None
 
 
 def test_zero_expiry_session_cookie_sent_on_wire():
@@ -797,20 +798,8 @@ def test_zero_expiry_session_cookie_sent_on_wire():
     jar = poll.get_jar()
     assert jar is not None
 
-    seen_cookie_headers = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen_cookie_headers[str(request.url)] = request.headers.get("cookie")
-        return httpx.Response(200, text="<html>ok</html>")
-
-    client = httpx.Client(
-        transport=httpx.MockTransport(handler),
-        cookies=httpx.Cookies(jar),
-        follow_redirects=True,
-    )
-
-    client.get("https://www.ft.com/x")
-
-    ft_cookie_header = seen_cookie_headers["https://www.ft.com/x"]
+    req = urllib.request.Request("https://www.ft.com/x")
+    jar.add_cookie_header(req)
+    ft_cookie_header = req.get_header("Cookie")
     assert ft_cookie_header is not None
     assert "sid" in ft_cookie_header

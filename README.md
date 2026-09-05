@@ -157,8 +157,8 @@ macOS), see [docs/deploy-native.md](docs/deploy-native.md).
 
 Model, poll interval, items per feed and the API key can be set via environment
 variable, or (if unset) via the Settings page in the web UI, which persists them
-to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST` and
-`PINTXOS_PORT` are environment-only.
+to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST`,
+`PINTXOS_PORT` and `PINTXOS_IMPERSONATE` are environment-only.
 
 | Env var | Default | Meaning |
 |---|---|---|
@@ -173,6 +173,7 @@ to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST` and
 | `PINTXOS_DATA_DIR` | `./data` | Directory for the SQLite database and `cookies.txt`. |
 | `PINTXOS_HOST` | `127.0.0.1` | Host/interface the server binds to. The Docker image sets `PINTXOS_HOST=0.0.0.0`. |
 | `PINTXOS_PORT` | `8000` | Port the server binds to. |
+| `PINTXOS_IMPERSONATE` | `safari17_0` | curl_cffi browser TLS/HTTP fingerprint used for all fetches, so Cloudflare-fronted sites accept the request. Set empty to disable impersonation (uses the Pintxøs User-Agent instead). |
 | `PINTXOS_NO_SCHEDULER` | *(unset)* | Set to `1` to disable polling entirely, periodic **and** manual (Poll now queues forever). For tests and CI only. For a local run without periodic polls, set `PINTXOS_POLL_MINUTES=1440` instead. |
 
 The ad filter toggle and extra patterns can also be changed on the Settings page unless the corresponding environment variable is set.

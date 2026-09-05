@@ -114,6 +114,13 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             raise HTTPException(status_code=404, detail="feed not found")
         global_filter_ads_on = is_truthy(get_setting("PINTXOS_FILTER_ADS", conn))
         global_patterns = get_setting("PINTXOS_AD_TITLE_PATTERNS", conn) or ""
+        fallback_count = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1", (feed_id,)
+        ).fetchone()[0]
+        missing_count = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1 AND auth = 'missing'",
+            (feed_id,),
+        ).fetchone()[0]
     try:
         last_filtered = json.loads(feed["last_filtered"] or "[]")
         if not isinstance(last_filtered, list):
@@ -129,6 +136,8 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "global_filter_ads_on": global_filter_ads_on,
             "global_patterns": global_patterns,
             "last_filtered": last_filtered,
+            "fallback_count": fallback_count,
+            "missing_count": missing_count,
         },
     )
 
@@ -254,6 +263,23 @@ def poll_feed_now(feed_id: int, request: Request) -> Response:
     if request.headers.get("x-requested-with") == "fetch":
         return Response(status_code=204)
     return _redirect("/")
+
+
+@app.post("/feeds/{feed_id}/retry-fallback")
+def retry_fallback(feed_id: int) -> Response:
+    with db() as conn:
+        feed = conn.execute("SELECT id FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        if feed is None:
+            raise HTTPException(status_code=404, detail="feed not found")
+        n = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1", (feed_id,)
+        ).fetchone()[0]
+        if n == 0:
+            return _redirect("/", msg="No fallback items")
+        conn.execute("DELETE FROM items WHERE feed_id = ? AND fallback = 1", (feed_id,))
+    poll_one(feed_id)
+    item_word = "item" if n == 1 else "items"
+    return _redirect("/", msg=f"Retrying {n} {item_word}")
 
 
 def env_pinned(key: str) -> bool:

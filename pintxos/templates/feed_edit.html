@@ -49,4 +49,10 @@
   <button type="submit" class="btn-primary">Save</button>
   <a href="/" class="cancel">Cancel</a>
 </form>
+{% if fallback_count > 0 %}
+<form method="post" action="/feeds/{{ feed.id }}/retry-fallback" class="retry-fallback">
+  <button type="submit" class="btn-tint-neutral">Retry {{ fallback_count }} fallback item{{ "s" if fallback_count != 1 else "" }}</button>
+  <div class="muted">Deletes these items and re-summarizes them on the next poll; each costs one summary call. Useful after adding subscription cookies.{% if missing_count > 0 %} {{ missing_count }} of them may need a login.{% endif %}</div>
+</form>
+{% endif %}
 {% endblock %}

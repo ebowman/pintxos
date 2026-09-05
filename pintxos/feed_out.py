@@ -34,7 +34,22 @@ def render_rss(
         words = item["word_count"]
         if words:
             description += f"<p><em>{format_stats(words)}</em></p>"
-        if item["fallback"]:
+        auth = item["auth"]
+        if auth == "used":
+            description += (
+                "<p><em>Read with your subscription.</em></p>"
+            )
+        elif auth == "missing":
+            description += (
+                "<p><em>Login may be required; "
+                "summarized from the feed excerpt.</em></p>"
+            )
+        elif auth == "failed":
+            description += (
+                "<p><em>Your saved login did not work (cookies expired?); "
+                "summarized from the feed excerpt.</em></p>"
+            )
+        elif auth is None and item["fallback"]:
             description += (
                 "<p><em>Note: article fetch failed; "
                 "summarized from feed excerpt.</em></p>"

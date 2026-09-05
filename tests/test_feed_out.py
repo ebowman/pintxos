@@ -82,6 +82,121 @@ def test_feed_xml_renders_items():
             assert "Original: Original One" in entry.description
 
 
+def _seed_auth_cases():
+    with db() as conn:
+        feed_id = conn.execute(
+            "INSERT INTO feeds(url, title, created_at) VALUES (?, ?, ?)",
+            (FEED_URL, "Example Feed", now()),
+        ).lastrowid
+        rows = [
+            (
+                "guid-used",
+                "https://example.com/used",
+                "Original Used",
+                "Headline Used",
+                "Summary used.",
+                1,
+                "used",
+            ),
+            (
+                "guid-missing",
+                "https://example.com/missing",
+                "Original Missing",
+                "Headline Missing",
+                "Summary missing.",
+                1,
+                "missing",
+            ),
+            (
+                "guid-failed",
+                "https://example.com/failed",
+                "Original Failed",
+                "Headline Failed",
+                "Summary failed.",
+                1,
+                "failed",
+            ),
+        ]
+        for guid, link, original_title, headline, summary, fallback, auth in rows:
+            conn.execute(
+                """INSERT INTO items
+                (feed_id, guid, link, original_title, published_at, headline, summary, fallback, auth, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    feed_id,
+                    guid,
+                    link,
+                    original_title,
+                    "2026-09-03T12:00:00+00:00",
+                    headline,
+                    summary,
+                    fallback,
+                    auth,
+                    now(),
+                ),
+            )
+    return feed_id
+
+
+NOTES = {
+    "used": "Read with your subscription.",
+    "missing": "Login may be required; summarized from the feed excerpt.",
+    "failed": "Your saved login did not work (cookies expired?); summarized from the feed excerpt.",
+    "null_fallback": "Note: article fetch failed; summarized from feed excerpt.",
+}
+
+
+def test_feed_xml_note_for_auth_used():
+    feed_id = _seed_auth_cases()
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    parsed = feedparser.parse(resp.content)
+    entry = next(e for e in parsed.entries if e.title == "Headline Used")
+    assert NOTES["used"] in entry.description
+
+
+def test_feed_xml_note_for_auth_missing():
+    feed_id = _seed_auth_cases()
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    parsed = feedparser.parse(resp.content)
+    entry = next(e for e in parsed.entries if e.title == "Headline Missing")
+    assert NOTES["missing"] in entry.description
+
+
+def test_feed_xml_note_for_auth_failed():
+    feed_id = _seed_auth_cases()
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    parsed = feedparser.parse(resp.content)
+    entry = next(e for e in parsed.entries if e.title == "Headline Failed")
+    assert NOTES["failed"] in entry.description
+
+
+def test_feed_xml_note_for_null_auth_with_fallback():
+    _seed()
+    with TestClient(app) as c:
+        resp = c.get("/feeds/1.xml")
+
+    parsed = feedparser.parse(resp.content)
+    entry = next(e for e in parsed.entries if e.title == "Headline Two")
+    assert NOTES["null_fallback"] in entry.description
+
+
+def test_feed_xml_no_note_for_null_auth_no_fallback():
+    _seed()
+    with TestClient(app) as c:
+        resp = c.get("/feeds/1.xml")
+
+    parsed = feedparser.parse(resp.content)
+    entry = next(e for e in parsed.entries if e.title == "Headline One")
+    for note in NOTES.values():
+        assert note not in entry.description
+
+
 def test_feed_xml_404_for_missing_feed():
     with TestClient(app) as c:
         resp = c.get("/feeds/999.xml")

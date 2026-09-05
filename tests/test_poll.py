@@ -11,9 +11,20 @@ import pytest
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
+import httpx
+
 from pintxos import poll
+from pintxos.cookies import cookie_path
 from pintxos.db import db, now
 from pintxos.summarize import MissingApiKey, SummarizeError
+
+# Well into the future so cookies are never seen as expired.
+FUTURE_EXPIRY = 4102444800  # 2100-01-01T00:00:00Z
+
+
+def _write_cookies(lines):
+    path = cookie_path()
+    path.write_text("# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n")
 
 FEED_URL = "https://example.com/feed.xml"
 SAMPLE = (Path(__file__).parent / "fixtures" / "sample.xml").read_bytes()
@@ -660,3 +671,84 @@ def test_invalid_feed_ad_pattern_warns_with_feed_id_and_still_filters_with_good_
     assert f"feed {feed_id}" in caplog.text
     assert "Big Giveaway" not in seen
     assert feed_row(feed_id)["ads_filtered"] == 1
+
+
+# --- _get() and cookie jar propagation -------------------------------------------
+
+
+@pytest.fixture(autouse=False)
+def _reset_client_jar(monkeypatch):
+    """Cookie-jar tests must not leak the installed jar across test order."""
+    monkeypatch.setattr(poll, "_client_jar", None)
+    poll._client.cookies = httpx.Cookies()
+    yield
+    poll._client_jar = None
+    poll._client.cookies = httpx.Cookies()
+
+
+def test_get_installs_jar_on_client_when_cookies_file_exists(_reset_client_jar, monkeypatch):
+    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+
+    def fake(url):
+        return FakeResponse(b"<html>ok</html>", content_type="text/html")
+
+    monkeypatch.setattr(poll._client, "get", fake)
+
+    poll._get("https://www.example.com/a")
+
+    assert poll._client.cookies.get("sid", domain=".example.com") == "abc"
+    installed_jar = poll._client.cookies.jar
+
+    # Cookies file is unchanged, so the second call must not reinstall the jar.
+    poll._get("https://www.example.com/a")
+    assert poll._client.cookies.jar is installed_jar
+
+
+def test_get_clears_client_cookies_when_file_removed(_reset_client_jar, monkeypatch):
+    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+
+    def fake(url):
+        return FakeResponse(b"<html>ok</html>", content_type="text/html")
+
+    monkeypatch.setattr(poll._client, "get", fake)
+
+    poll._get("https://www.example.com/a")
+    assert len(poll._client.cookies) == 1
+
+    cookie_path().unlink()
+
+    poll._get("https://www.example.com/a")
+    assert len(poll._client.cookies) == 0
+
+
+def test_cookies_only_sent_to_matching_domain():
+    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc123"])
+    jar = poll.get_jar()
+    assert jar is not None
+
+    seen_cookie_headers = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_cookie_headers[str(request.url)] = request.headers.get("cookie")
+        return httpx.Response(200, text="<html>ok</html>")
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        cookies=httpx.Cookies(jar),
+        follow_redirects=True,
+    )
+
+    client.get("https://www.ft.com/x")
+    client.get("https://www.example.com/x")
+
+    ft_cookie_header = seen_cookie_headers["https://www.ft.com/x"]
+    assert ft_cookie_header is not None
+    assert "sid" in ft_cookie_header
+    assert seen_cookie_headers["https://www.example.com/x"] is None
+
+    assert seen_cookie_headers["https://www.example.com/x"] is None
+
+    # No cross-site leak: the client's own persistent cookie jar must not have
+    # picked up the ft.com cookie under the example.com domain (or at all --
+    # per-request `cookies=` is not merged into `client.cookies`).
+    assert "example.com" not in [c.domain for c in client.cookies.jar]

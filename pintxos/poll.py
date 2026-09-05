@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from http.cookiejar import MozillaCookieJar
 
 import feedparser
 import httpx
@@ -15,6 +16,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from pintxos import adfilter
 from pintxos.config import get_setting, is_truthy
+from pintxos.cookies import get_jar
 from pintxos.db import db, now
 from pintxos.stats import word_count
 from pintxos.summarize import MissingApiKey, SummarizeError, summarize
@@ -31,12 +33,28 @@ MIN_FALLBACK_CHARS = 50
 _client = httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=20, follow_redirects=True)
 scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
 
+# Which jar object (if any) is currently installed on `_client.cookies`. Compared by
+# identity against get_jar()'s return value so we only reinstall when it changes.
+_client_jar: MozillaCookieJar | None = None
+
 # What each feed is doing right now, for the UI. In-memory: single process, dies with it.
 _status: dict[int, str] = {}
 
 
 def _get(url: str) -> httpx.Response:
     """Single seam for HTTP GETs so tests can monkeypatch one thing."""
+    global _client_jar
+    jar = get_jar()
+    if jar is not _client_jar:
+        # httpx matches cookies to each request's domain/path, so installing the jar
+        # on the shared client sends each cookie only to its own site; swapping on
+        # identity change picks up a re-exported file (get_jar() reloads on
+        # mtime/size change) without a restart. Response cookies (e.g. refreshed
+        # session tokens) accumulate in the installed jar for the life of the
+        # process, which is the desired behaviour for logins; nothing is written
+        # back to disk.
+        _client.cookies = httpx.Cookies(jar) if jar is not None else httpx.Cookies()
+        _client_jar = jar
     return _client.get(url)
 
 

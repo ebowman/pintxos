@@ -160,6 +160,21 @@ def _keep_patterns(conn) -> list[re.Pattern]:
     )
 
 
+def _fetch_and_auth(
+    link: str, jar: MozillaCookieJar | None
+) -> tuple[str | None, str | None, int | None]:
+    """Fetch `link`'s article text and work out (text, auth, word_count) for it."""
+    had = bool(link) and jar is not None and has_cookies_for(jar, link)
+    text = fetch_article(link) if link else None
+    words = word_count(text) if text is not None else None
+    auth = None
+    if text is None:
+        auth = "failed" if had else "missing"
+    elif had:
+        auth = "used"
+    return text, auth, words
+
+
 def _set_error(feed_id: int, message: str, polled: bool = True) -> None:
     with db() as conn:
         if polled:
@@ -241,16 +256,9 @@ def poll_feed(feed_id: int) -> bool:
         total = len(kept)
         for i, (guid, link, entry) in enumerate(kept, 1):
             original_title = entry.get("title", "")
-            had = bool(link) and jar is not None and has_cookies_for(jar, link)
-            text = fetch_article(link) if link else None
             # Word count only when we actually read the article, on the full extracted
             # text (before summarize() truncates it); fallback items stay NULL.
-            words = word_count(text) if text is not None else None
-            auth = None
-            if text is None:
-                auth = "failed" if had else "missing"
-            elif had:
-                auth = "used"
+            text, auth, words = _fetch_and_auth(link, jar)
             fallback = 0
             if text is None:
                 fallback = 1
@@ -296,6 +304,59 @@ def poll_feed(feed_id: int) -> bool:
         return True
     finally:
         _status.pop(feed_id, None)
+
+
+def retry_fallback(feed_id: int) -> None:
+    """Re-fetch and re-summarize this feed's fallback items in place; never deletes."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, link, original_title FROM items WHERE feed_id = ? AND fallback = 1",
+            (feed_id,),
+        ).fetchall()
+
+    jar = get_jar()
+    total = len(rows)
+    try:
+        for i, row in enumerate(rows, 1):
+            item_id, link, original_title = row["id"], row["link"], row["original_title"]
+            _status[feed_id] = f"Retrying {i}/{total}"
+            text, auth, words = _fetch_and_auth(link, jar)
+            if text is None:
+                with db() as conn:
+                    conn.execute("UPDATE items SET auth = ? WHERE id = ?", (auth, item_id))
+                continue
+
+            try:
+                headline, summary = summarize(text, original_title, link)
+            except MissingApiKey:
+                log.error("ANTHROPIC_API_KEY not set, stopping retry")
+                _set_error(feed_id, "ANTHROPIC_API_KEY not set", polled=False)
+                return
+            except SummarizeError as e:
+                log.warning("summarize failed for %s: %s", link, e)
+                continue  # left as a fallback item; a later retry can try again
+
+            with db() as conn:  # commit per item: a crash keeps what we already paid for
+                # a row pruned meanwhile is a harmless no-op
+                conn.execute(
+                    "UPDATE items SET headline = ?, summary = ?, fallback = 0, auth = ?, "
+                    "word_count = ? WHERE id = ?",
+                    (headline, summary, auth, words, item_id),
+                )
+    finally:
+        _status.pop(feed_id, None)
+
+
+def retry_one(feed_id: int) -> None:
+    """Queue a manual retry of one feed's fallback items."""
+    _status.setdefault(feed_id, "Queued")
+    scheduler.add_job(
+        retry_fallback,
+        args=[feed_id],
+        id=f"retry-{feed_id}",
+        replace_existing=True,
+        misfire_grace_time=None,
+    )
 
 
 def poll_one(feed_id: int) -> None:

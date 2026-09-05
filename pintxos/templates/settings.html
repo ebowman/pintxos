@@ -63,32 +63,9 @@
 <p class="muted">No cookies.txt found.</p>
 {% endif %}
 {% else %}
-<div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>Domain</th>
-        <th>Cookies</th>
-        <th>Earliest expiry</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for entry in cookie_domains %}
-      <tr>
-        <td>{{ entry.domain }}</td>
-        <td>{{ entry.count }}</td>
-        <td>
-          {% if entry.expires %}
-            {{ entry.expires }}{% if entry.expires <= cookie_soon %} <span class="muted">(expires soon)</span>{% endif %}
-          {% else %}
-            session
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+{% for entry in cookie_domains %}
+<div class="muted">{{ entry.domain }} — {{ entry.count }} cookie{{ "s" if entry.count != 1 else "" }}, earliest expiry {{ entry.expires or "session" }}{% if entry.expires and entry.expires <= cookie_soon %} (expires soon){% endif %}</div>
+{% endfor %}
 {% endif %}
 
 <form method="post" action="/settings/cookies" enctype="multipart/form-data">

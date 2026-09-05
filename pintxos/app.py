@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import http.cookiejar
 import json
 import os
 import sqlite3
@@ -19,11 +18,11 @@ from fastapi.templating import Jinja2Templates
 
 from pintxos import adfilter
 from pintxos.config import data_dir, get_setting, is_truthy
-from pintxos.cookies import cookie_path, get_jar, has_cookies_for, load_jar, summary
+from pintxos.cookies import cookie_path, expiry_for, get_jar, has_cookies_for, load_jar, summary
 from pintxos.db import db, init_db, now
 from pintxos.feed_out import render_rss
 from pintxos.poll import _status as poll_status
-from pintxos.poll import poll_one, reschedule, scheduler, start_scheduler
+from pintxos.poll import poll_one, reschedule, retry_one, scheduler, start_scheduler
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -114,23 +113,19 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             raise HTTPException(status_code=404, detail="feed not found")
         global_filter_ads_on = is_truthy(get_setting("PINTXOS_FILTER_ADS", conn))
         global_patterns = get_setting("PINTXOS_AD_TITLE_PATTERNS", conn) or ""
-        fallback_count = conn.execute(
-            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1", (feed_id,)
-        ).fetchone()[0]
-        missing_count = conn.execute(
-            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1 AND auth = 'missing'",
-            (feed_id,),
-        ).fetchone()[0]
-        auth_row = conn.execute(
-            "SELECT SUM(auth = 'used') AS used, SUM(auth = 'failed') AS failed, "
-            "SUM(auth = 'missing') AS missing FROM items WHERE feed_id = ?",
+        counts = conn.execute(
+            "SELECT SUM(fallback = 1) AS fallback_count, SUM(auth = 'used') AS auth_used, "
+            "SUM(auth = 'failed') AS auth_failed, SUM(auth = 'missing') AS auth_missing "
+            "FROM items WHERE feed_id = ?",
             (feed_id,),
         ).fetchone()
-        auth_used = auth_row["used"] or 0
-        auth_failed = auth_row["failed"] or 0
-        auth_missing = auth_row["missing"] or 0
+        fallback_count = counts["fallback_count"] or 0
+        auth_used = counts["auth_used"] or 0
+        auth_failed = counts["auth_failed"] or 0
+        auth_missing = counts["auth_missing"] or 0
         latest_link = conn.execute(
-            "SELECT link FROM items WHERE feed_id = ? ORDER BY published_at DESC, id DESC LIMIT 1",
+            "SELECT link FROM items WHERE feed_id = ? ORDER BY published_at DESC, id DESC "
+            "LIMIT 1",
             (feed_id,),
         ).fetchone()
     try:
@@ -145,16 +140,7 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
 
     jar = get_jar()
     cookies_loaded_for_domain = bool(jar) and has_cookies_for(jar, f"https://{domain}/")
-
-    domain_expiry = None
-    if jar is not None and domain:
-        best_match_len = -1
-        for entry in summary(jar):
-            cookie_domain = entry["domain"].lstrip(".")
-            if domain == cookie_domain or domain.endswith("." + cookie_domain):
-                if len(cookie_domain) > best_match_len:
-                    best_match_len = len(cookie_domain)
-                    domain_expiry = entry["expires"]
+    domain_expiry = expiry_for(jar, domain)
 
     return templates.TemplateResponse(
         request,
@@ -166,7 +152,6 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "global_patterns": global_patterns,
             "last_filtered": last_filtered,
             "fallback_count": fallback_count,
-            "missing_count": missing_count,
             "auth_used": auth_used,
             "auth_failed": auth_failed,
             "auth_missing": auth_missing,
@@ -306,7 +291,7 @@ def poll_feed_now(feed_id: int, request: Request) -> Response:
 
 
 @app.post("/feeds/{feed_id}/retry-fallback")
-def retry_fallback(feed_id: int) -> Response:
+def retry_fallback_route(feed_id: int) -> Response:
     with db() as conn:
         feed = conn.execute("SELECT id FROM feeds WHERE id = ?", (feed_id,)).fetchone()
         if feed is None:
@@ -316,10 +301,8 @@ def retry_fallback(feed_id: int) -> Response:
         ).fetchone()[0]
         if n == 0:
             return _redirect("/", msg="No fallback items")
-        conn.execute("DELETE FROM items WHERE feed_id = ? AND fallback = 1", (feed_id,))
-    poll_one(feed_id)
-    item_word = "item" if n == 1 else "items"
-    return _redirect("/", msg=f"Retrying {n} {item_word}")
+    retry_one(feed_id)
+    return _redirect("/", msg=f"Retrying {n} item{'s' if n != 1 else ''}")
 
 
 def env_pinned(key: str) -> bool:
@@ -427,9 +410,6 @@ def save_settings(
     return _redirect("/settings", msg="Saved")
 
 
-MAX_COOKIES_FILE_SIZE = 1024 * 1024  # 1 MiB
-
-
 @app.post("/settings/cookies")
 async def upload_cookies(
     cookies: UploadFile | None = File(None),
@@ -442,30 +422,30 @@ async def upload_cookies(
         data = cookies_text.encode()
     if not data:
         return _redirect("/settings", err="Nothing to upload")
-    if len(data) > MAX_COOKIES_FILE_SIZE:
+    if len(data) > 1024 * 1024:  # 1 MiB
         return _redirect("/settings", err="File too large")
 
     tmp = tempfile.NamedTemporaryFile(dir=data_dir(), delete=False)
     tmp_path = Path(tmp.name)
+    tmp.write(data)
+    tmp.close()
+
+    replaced = False
     try:
-        tmp.write(data)
-        tmp.close()
-        jar = http.cookiejar.MozillaCookieJar(str(tmp_path))
-        jar.load(ignore_discard=True, ignore_expires=True)
-    except (http.cookiejar.LoadError, UnicodeDecodeError, ValueError):
-        tmp_path.unlink(missing_ok=True)
-        return _redirect("/settings", err="Not a Netscape cookies.txt file")
+        # Validate via load_jar() itself so the flash counts match what polling will see.
+        jar = load_jar(tmp_path)
+        if jar is None:
+            return _redirect("/settings", err="Not a Netscape cookies.txt file")
 
-    os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, cookie_path())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, cookie_path())
+        replaced = True
+    finally:
+        if not replaced:
+            tmp_path.unlink(missing_ok=True)
 
-    # Recompute the flash counts from load_jar() (not the validation jar
-    # above) so they reflect the 0-expiry-as-session-cookie and
-    # past-expiry-dropped rules that will actually apply when the saved
-    # file is loaded for polling.
-    jar = load_jar()
-    domains = summary(jar) if jar else []
-    count = len(jar) if jar else 0
+    domains = summary(jar)
+    count = len(jar)
     return _redirect(
         "/settings", msg=f"Cookies saved: {count} cookies for {len(domains)} domains"
     )

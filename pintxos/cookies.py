@@ -23,15 +23,16 @@ def cookie_path() -> Path:
     return data_dir() / "cookies.txt"
 
 
-def load_jar() -> http.cookiejar.MozillaCookieJar | None:
-    """Load cookies.txt fresh from disk. None if missing or unparseable."""
-    path = cookie_path()
+def load_jar(path: Path | None = None) -> http.cookiejar.MozillaCookieJar | None:
+    """Load a Netscape cookies file fresh from disk. None if missing or unparseable."""
+    if path is None:
+        path = cookie_path()
     if not path.exists():
         return None
     jar = http.cookiejar.MozillaCookieJar(str(path))
     try:
         jar.load(ignore_discard=True, ignore_expires=True)
-    except (http.cookiejar.LoadError, OSError):
+    except (http.cookiejar.LoadError, OSError, UnicodeDecodeError):
         log.warning("cookies.txt at %s could not be loaded as a Netscape cookie file", path)
         return None
 
@@ -90,6 +91,21 @@ def summary(jar: http.cookiejar.MozillaCookieJar | None) -> list[dict]:
             expires = datetime.fromtimestamp(epoch, tz=timezone.utc).date().isoformat()
         result.append({"domain": domain, "count": counts[domain], "expires": expires})
     return result
+
+
+def expiry_for(jar: http.cookiejar.MozillaCookieJar | None, host: str) -> str | None:
+    """Earliest expiry (or None for session-only) among the cookies covering `host`."""
+    if jar is None or not host:
+        return None
+    best_match_len = -1
+    expiry = None
+    for entry in summary(jar):
+        cookie_domain = entry["domain"].lstrip(".")
+        if host == cookie_domain or host.endswith("." + cookie_domain):
+            if len(cookie_domain) > best_match_len:
+                best_match_len = len(cookie_domain)
+                expiry = entry["expires"]
+    return expiry
 
 
 def has_cookies_for(jar: http.cookiejar.MozillaCookieJar | None, url: str) -> bool:

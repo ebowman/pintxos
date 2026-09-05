@@ -1013,9 +1013,9 @@ def test_settings_page_lists_cookie_domains_and_counts():
     assert ".economist.com" in page
     assert "2100-01-01" in page
     assert "expires soon" not in page
-    # Domain counts appear as table cells.
-    assert re.search(r"<td>2</td>", page)
-    assert re.search(r"<td>1</td>", page)
+    # Domain counts appear in the muted summary line.
+    assert re.search(r"\.ft\.com — 2 cookies", page)
+    assert re.search(r"\.economist\.com — 1 cookie[^s]", page)
 
 
 def test_settings_page_flags_cookie_expiring_soon():
@@ -1138,6 +1138,39 @@ def test_cookies_upload_garbage_rejected_and_existing_kept():
         )
         assert resp2.status_code == 303
         assert "err=" in resp2.headers["location"]
+
+    assert cookie_path().read_bytes() == valid
+
+    leftover = [
+        p
+        for p in data_dir().iterdir()
+        if p.name != "cookies.txt" and not p.name.startswith("pintxos.db")
+    ]
+    assert leftover == []
+
+
+def test_cookies_upload_non_utf8_rejected_and_existing_kept():
+    """A non-UTF-8 upload must not 500 and must not leave a temp file behind."""
+    from pintxos.config import data_dir
+    from pintxos.cookies import cookie_path
+
+    valid = _netscape_cookies_text().encode()
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings/cookies",
+            files={"cookies": ("cookies.txt", valid, "text/plain")},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        resp2 = c.post(
+            "/settings/cookies",
+            files={"cookies": ("cookies.txt", b"\xff\xfe\x00garbage", "text/plain")},
+            follow_redirects=False,
+        )
+        assert resp2.status_code == 303
+        location2 = resp2.headers["location"]
+        assert "Not+a+Netscape" in location2 or "Not%20a%20Netscape" in location2
 
     assert cookie_path().read_bytes() == valid
 
@@ -1275,13 +1308,11 @@ def test_feed_edit_page_shows_login_section_with_sentences(monkeypatch):
         page = c.get("/feeds/1").text
 
     assert "<h2>Login</h2>" in page
-    assert "2 items were fetched with your subscription." in page
-    assert "1 item fell back to the feed excerpt and may need a login." in page
+    assert "2 items fetched with your subscription" in page
+    assert "1 needs a login" in page
+    assert "1 login failed" in page
     assert "Add your subscription cookies" in page
     assert '<a href="/settings">Settings page</a>' in page
-    assert "1 item fell back although cookies were loaded for this site at the time; none are loaded for www.example.com now." in page
-    assert "fell back even though cookies for this site are loaded" not in page
-    assert "are session cookies with no expiry date" not in page
 
 
 def test_feed_edit_page_login_section_reflects_loaded_cookies(monkeypatch):
@@ -1297,7 +1328,7 @@ def test_feed_edit_page_login_section_reflects_loaded_cookies(monkeypatch):
 
     assert "<h2>Login</h2>" in page
     assert "Add your subscription cookies" not in page
-    assert "1 item fell back even though cookies for this site are loaded; they may have expired." in page
+    assert "1 login failed" in page
     assert "Cookies for www.example.com expire 2100-01-01." in page
 
 
@@ -1313,8 +1344,8 @@ def test_feed_edit_page_login_section_session_cookie_no_expiry(monkeypatch):
         page = c.get("/feeds/1").text
 
     assert "<h2>Login</h2>" in page
-    assert "1 item fell back even though cookies for this site are loaded; they may have expired." in page
-    assert "The cookies for www.example.com are session cookies with no expiry date." in page
+    assert "1 login failed" in page
+    assert "Cookies for www.example.com are session cookies." in page
 
 
 def test_feed_edit_page_no_login_section_when_auth_all_null(monkeypatch):

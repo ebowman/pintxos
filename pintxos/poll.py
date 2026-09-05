@@ -30,15 +30,8 @@ MIN_FALLBACK_CHARS = 50
 
 
 def _make_client(profile: str | None) -> curl_cffi.requests.Session:
-    """Build a curl_cffi session, optionally impersonating a browser's TLS/HTTP fingerprint.
-
-    Some sites (e.g. Cloudflare-managed challenges) fingerprint the TLS handshake and
-    reject plain httpx/requests clients regardless of cookies or User-Agent header.
-    curl_cffi's `impersonate=` reproduces a real browser's TLS/HTTP2 fingerprint and
-    also supplies that browser's own User-Agent, so we must not override it in that
-    case -- doing so would make the header disagree with the fingerprint. When
-    impersonation is disabled (`profile` falsy), we set our own User-Agent instead.
-    """
+    """Build a curl_cffi session, optionally impersonating a browser's TLS/HTTP fingerprint."""
+    # ponytail: impersonation supplies its own User-Agent, so we only set ours when off.
     headers = {} if profile else {"User-Agent": USER_AGENT}
     return curl_cffi.requests.Session(
         impersonate=profile or None, timeout=20, allow_redirects=True, headers=headers
@@ -67,14 +60,8 @@ def _get(url: str) -> curl_cffi.requests.Response:
     global _client_jar
     jar = get_jar()
     if jar is not _client_jar:
-        # curl_cffi's Cookies wraps a stdlib http.cookiejar.CookieJar and matches
-        # cookies to each request's domain/path the same way http.cookiejar/httpx do,
-        # so installing the jar on the shared session sends each cookie only to its
-        # own site; swapping on identity change picks up a re-exported file
-        # (get_jar() reloads on mtime/size change) without a restart. Response
-        # cookies (e.g. refreshed session tokens) accumulate in the installed jar for
-        # the life of the process, which is the desired behaviour for logins;
-        # nothing is written back to disk.
+        # ponytail: jar installed on the shared session, swapped on identity; ceiling:
+        # response cookies live only in memory.
         _client.cookies = (
             curl_cffi.requests.Cookies(jar) if jar is not None else curl_cffi.requests.Cookies()
         )
@@ -250,20 +237,20 @@ def poll_feed(feed_id: int) -> bool:
             if filtered:
                 log.info("feed %s: filtered %d ad entries", feed_id, len(filtered))
 
+        jar = get_jar()
         total = len(kept)
         for i, (guid, link, entry) in enumerate(kept, 1):
             original_title = entry.get("title", "")
-            jar = get_jar()
             had = bool(link) and jar is not None and has_cookies_for(jar, link)
             text = fetch_article(link) if link else None
             # Word count only when we actually read the article, on the full extracted
             # text (before summarize() truncates it); fallback items stay NULL.
             words = word_count(text) if text is not None else None
-            auth = (
-                None
-                if (text is not None and not had)
-                else ("used" if text is not None else ("failed" if had else "missing"))
-            )
+            auth = None
+            if text is None:
+                auth = "failed" if had else "missing"
+            elif had:
+                auth = "used"
             fallback = 0
             if text is None:
                 fallback = 1

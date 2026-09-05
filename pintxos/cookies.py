@@ -1,16 +1,4 @@
-"""Load a Netscape-format cookies.txt from the data directory.
-
-The file is optional: most installs never have one, and its absence is
-not an error. When present, it is loaded with `http.cookiejar`'s built-in
-Netscape parser (`MozillaCookieJar`). `get_jar` caches the parsed jar,
-keyed on the file's path, mtime and size, so repeated calls (e.g. once
-per poll) don't re-parse an unchanged file -- but a change in mtime/size,
-or the file appearing after being absent, triggers a reload. A failed
-parse is cached too, so a persistently malformed file doesn't get
-re-logged and re-attempted on every call.
-
-Never logs cookie names or values -- only the file path, on failure.
-"""
+"""Load a Netscape-format cookies.txt from the data directory."""
 
 from __future__ import annotations
 
@@ -36,17 +24,7 @@ def cookie_path() -> Path:
 
 
 def load_jar() -> http.cookiejar.MozillaCookieJar | None:
-    """Load cookies.txt fresh from disk. None if missing or unparseable.
-
-    Loaded with ignore_expires=True and then post-processed, rather than
-    relying on MozillaCookieJar.load's own expiry filtering: some
-    cookies.txt exporters (e.g. browser extensions like Cookie-Editor or
-    "Get cookies.txt LOCALLY") write an expiry of `0` for session cookies,
-    which `load(ignore_expires=False)` treats as an epoch timestamp and
-    silently drops as already-expired. We instead treat expiry `0` as
-    "session cookie" (no expiry) and drop only cookies with a real,
-    past expiry ourselves.
-    """
+    """Load cookies.txt fresh from disk. None if missing or unparseable."""
     path = cookie_path()
     if not path.exists():
         return None
@@ -57,6 +35,7 @@ def load_jar() -> http.cookiejar.MozillaCookieJar | None:
         log.warning("cookies.txt at %s could not be loaded as a Netscape cookie file", path)
         return None
 
+    # ponytail: expiry 0 means "session cookie" here, not an expired epoch timestamp.
     now = int(time.time())
     for cookie in list(jar):
         if cookie.expires == 0:
@@ -69,12 +48,9 @@ def load_jar() -> http.cookiejar.MozillaCookieJar | None:
 
 
 def get_jar() -> http.cookiejar.MozillaCookieJar | None:
-    """Cached cookie jar, reloaded when cookies.txt changes (by mtime/size).
-
-    Returns None if the file is missing. A failed load is cached under the
-    same key as the attempt that produced it, so it is not retried on every
-    call while the file remains unchanged.
-    """
+    """Cached cookie jar, reloaded when cookies.txt changes (by mtime/size)."""
+    # ponytail: reload when mtime/size change; ceiling: a same-size rewrite inside
+    # one mtime tick is missed.
     global _cache
 
     path = cookie_path()
@@ -94,57 +70,34 @@ def get_jar() -> http.cookiejar.MozillaCookieJar | None:
 
 
 def summary(jar: http.cookiejar.MozillaCookieJar | None) -> list[dict]:
-    """Per-domain cookie counts and earliest non-session expiry.
-
-    Returns one dict per domain present in `jar`:
-    `{"domain": str, "count": int, "expires": str | None}`, where `expires`
-    is the ISO date (YYYY-MM-DD, UTC) of the earliest non-session cookie
-    for that domain, or None if every cookie for that domain is a session
-    cookie (no expiry). Sorted by domain. Never includes cookie names or
-    values.
-    """
+    """Per-domain cookie counts and earliest non-session expiry."""
     if jar is None:
         return []
 
     counts: dict[str, int] = {}
-    earliest_expires: dict[str, int] = {}
+    earliest: dict[str, int] = {}
     for cookie in jar:
         counts[cookie.domain] = counts.get(cookie.domain, 0) + 1
-        if cookie.expires is not None:
-            current = earliest_expires.get(cookie.domain)
-            if current is None or cookie.expires < current:
-                earliest_expires[cookie.domain] = cookie.expires
+        current = earliest.get(cookie.domain)
+        if cookie.expires is not None and (current is None or cookie.expires < current):
+            earliest[cookie.domain] = cookie.expires
 
     result = []
     for domain in sorted(counts):
-        expires_epoch = earliest_expires.get(domain)
-        expires = (
-            datetime.fromtimestamp(expires_epoch, tz=timezone.utc).date().isoformat()
-            if expires_epoch is not None
-            else None
-        )
+        epoch = earliest.get(domain)
+        expires = None
+        if epoch is not None:
+            expires = datetime.fromtimestamp(epoch, tz=timezone.utc).date().isoformat()
         result.append({"domain": domain, "count": counts[domain], "expires": expires})
     return result
 
 
 def has_cookies_for(jar: http.cookiejar.MozillaCookieJar | None, url: str) -> bool:
-    """Whether `jar` holds at least one cookie that would be sent with a request to `url`.
-
-    Delegates to the jar's own request-matching (`_cookies_for_request`), built on
-    `http.cookiejar.Request` from `url` via `urllib.request.Request`. This is the same
-    matching http.cookiejar (and therefore httpx's jar wrapper) uses to decide which
-    cookies to send, so the answer here agrees with what the actual request will carry:
-    a `.ft.com` cookie matches `www.ft.com` and `ft.com`, a host-only `www.ft.com` cookie
-    matches only that host, and nothing matches an unrelated domain. `_cookies_for_request`
-    is a private method but has been stable across CPython versions. It relies on
-    `policy._now`/`jar._now` being set (normally done by `add_cookie_header` before it
-    calls this), used to decide whether a cookie has expired -- so we set them here too,
-    matching `add_cookie_header`'s own `self._policy._now = self._now = int(time.time())`.
-    """
+    """Whether `jar` holds at least one cookie that would be sent with a request to `url`."""
     if jar is None:
         return False
     if not urlparse(url).hostname:
         return False
     req = urllib.request.Request(url)
-    jar._policy._now = jar._now = int(time.time())
-    return bool(jar._cookies_for_request(req))
+    jar.add_cookie_header(req)
+    return req.has_header("Cookie")

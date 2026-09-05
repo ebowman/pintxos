@@ -345,6 +345,7 @@ def settings_page(request: Request) -> Response:
     jar = get_jar()
     cookie_domains = summary(jar) if jar else []
     cookie_file = str(cookie_path())
+    cookie_file_exists = cookie_path().exists()
     cookie_soon = (datetime.now(UTC) + timedelta(days=7)).date().isoformat()
     return templates.TemplateResponse(
         request,
@@ -363,6 +364,7 @@ def settings_page(request: Request) -> Response:
             "keep_patterns_env": keep_patterns_env,
             "cookie_domains": cookie_domains,
             "cookie_file": cookie_file,
+            "cookie_file_exists": cookie_file_exists,
             "cookie_soon": cookie_soon,
         },
     )

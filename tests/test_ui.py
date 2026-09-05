@@ -968,6 +968,34 @@ def test_settings_page_no_cookies_file_shows_placeholder():
         page = c.get("/settings").text
 
     assert "No cookies.txt found." in page
+    assert 'action="/settings/cookies/delete"' not in page
+
+
+def test_settings_page_expired_cookies_shows_no_usable_cookies_and_remove_button():
+    past_expiry = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
+    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{past_expiry}\tsid\tabc"])
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert "no usable cookies" in page
+    assert 'action="/settings/cookies/delete"' in page
+
+
+def test_settings_delete_cookies_with_expired_file_shows_no_cookies_file_found():
+    past_expiry = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
+    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{past_expiry}\tsid\tabc"])
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+        assert "no usable cookies" in page
+
+        resp = c.post("/settings/cookies/delete", follow_redirects=False)
+        assert resp.status_code in (302, 303, 307, 308)
+
+        assert not (data_dir() / "cookies.txt").exists()
+
+        page = c.get("/settings").text
+
+    assert "No cookies.txt found." in page
 
 
 def test_settings_page_lists_cookie_domains_and_counts():

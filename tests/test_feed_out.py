@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import feedparser
+import pytest
 from fastapi.testclient import TestClient
 
 from pintxos.app import app
@@ -88,51 +89,15 @@ def _seed_auth_cases():
             "INSERT INTO feeds(url, title, created_at) VALUES (?, ?, ?)",
             (FEED_URL, "Example Feed", now()),
         ).lastrowid
-        rows = [
-            (
-                "guid-used",
-                "https://example.com/used",
-                "Original Used",
-                "Headline Used",
-                "Summary used.",
-                1,
-                "used",
-            ),
-            (
-                "guid-missing",
-                "https://example.com/missing",
-                "Original Missing",
-                "Headline Missing",
-                "Summary missing.",
-                1,
-                "missing",
-            ),
-            (
-                "guid-failed",
-                "https://example.com/failed",
-                "Original Failed",
-                "Headline Failed",
-                "Summary failed.",
-                1,
-                "failed",
-            ),
-        ]
-        for guid, link, original_title, headline, summary, fallback, auth in rows:
+        for auth in ("used", "missing", "failed"):
             conn.execute(
                 """INSERT INTO items
                 (feed_id, guid, link, original_title, published_at, headline, summary, fallback, auth, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    feed_id,
-                    guid,
-                    link,
-                    original_title,
-                    "2026-09-03T12:00:00+00:00",
-                    headline,
-                    summary,
-                    fallback,
-                    auth,
-                    now(),
+                    feed_id, f"guid-{auth}", f"https://example.com/{auth}", f"Original {auth.title()}",
+                    "2026-09-03T12:00:00+00:00", f"Headline {auth.title()}", f"Summary {auth}.",
+                    1, auth, now(),
                 ),
             )
     return feed_id
@@ -146,55 +111,28 @@ NOTES = {
 }
 
 
-def test_feed_xml_note_for_auth_used():
-    feed_id = _seed_auth_cases()
+@pytest.mark.parametrize(
+    "seed_fn, feed_url, headline, expected_note_key",
+    [
+        (_seed_auth_cases, None, "Headline Used", "used"),
+        (_seed_auth_cases, None, "Headline Missing", "missing"),
+        (_seed_auth_cases, None, "Headline Failed", "failed"),
+        (_seed, "/feeds/1.xml", "Headline Two", "null_fallback"),
+        (_seed, "/feeds/1.xml", "Headline One", None),
+    ],
+)
+def test_feed_xml_note_reflects_auth_and_fallback(seed_fn, feed_url, headline, expected_note_key):
+    feed_id = seed_fn()
     with TestClient(app) as c:
-        resp = c.get(f"/feeds/{feed_id}.xml")
+        resp = c.get(feed_url or f"/feeds/{feed_id}.xml")
 
     parsed = feedparser.parse(resp.content)
-    entry = next(e for e in parsed.entries if e.title == "Headline Used")
-    assert NOTES["used"] in entry.description
-
-
-def test_feed_xml_note_for_auth_missing():
-    feed_id = _seed_auth_cases()
-    with TestClient(app) as c:
-        resp = c.get(f"/feeds/{feed_id}.xml")
-
-    parsed = feedparser.parse(resp.content)
-    entry = next(e for e in parsed.entries if e.title == "Headline Missing")
-    assert NOTES["missing"] in entry.description
-
-
-def test_feed_xml_note_for_auth_failed():
-    feed_id = _seed_auth_cases()
-    with TestClient(app) as c:
-        resp = c.get(f"/feeds/{feed_id}.xml")
-
-    parsed = feedparser.parse(resp.content)
-    entry = next(e for e in parsed.entries if e.title == "Headline Failed")
-    assert NOTES["failed"] in entry.description
-
-
-def test_feed_xml_note_for_null_auth_with_fallback():
-    _seed()
-    with TestClient(app) as c:
-        resp = c.get("/feeds/1.xml")
-
-    parsed = feedparser.parse(resp.content)
-    entry = next(e for e in parsed.entries if e.title == "Headline Two")
-    assert NOTES["null_fallback"] in entry.description
-
-
-def test_feed_xml_no_note_for_null_auth_no_fallback():
-    _seed()
-    with TestClient(app) as c:
-        resp = c.get("/feeds/1.xml")
-
-    parsed = feedparser.parse(resp.content)
-    entry = next(e for e in parsed.entries if e.title == "Headline One")
-    for note in NOTES.values():
-        assert note not in entry.description
+    entry = next(e for e in parsed.entries if e.title == headline)
+    if expected_note_key is None:
+        for note in NOTES.values():
+            assert note not in entry.description
+    else:
+        assert NOTES[expected_note_key] in entry.description
 
 
 def test_feed_xml_404_for_missing_feed():

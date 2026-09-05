@@ -18,13 +18,7 @@ from pintxos.cookies import cookie_path
 from pintxos.db import db, now
 from pintxos.summarize import MissingApiKey, SummarizeError
 
-# Well into the future so cookies are never seen as expired.
-FUTURE_EXPIRY = 4102444800  # 2100-01-01T00:00:00Z
-
-
-def _write_cookies(lines):
-    path = cookie_path()
-    path.write_text("# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n")
+from conftest import FUTURE_EXPIRY, write_cookies
 
 FEED_URL = "https://example.com/feed.xml"
 SAMPLE = (Path(__file__).parent / "fixtures" / "sample.xml").read_bytes()
@@ -676,15 +670,18 @@ def test_invalid_feed_ad_pattern_warns_with_feed_id_and_still_filters_with_good_
 # --- client construction / impersonation -----------------------------------------
 
 
-def test_make_client_impersonates_by_default():
-    client = poll._make_client("safari17_0")
-    assert client.impersonate == "safari17_0"
-
-
-def test_make_client_no_impersonation_uses_pintxos_user_agent():
-    client = poll._make_client("")
-    assert not client.impersonate
-    assert client.headers.get("User-Agent") == poll.USER_AGENT
+@pytest.mark.parametrize(
+    "profile, expect_impersonate, expect_pintxos_ua",
+    [
+        ("safari17_0", "safari17_0", False),
+        ("", None, True),
+    ],
+)
+def test_make_client_impersonation(profile, expect_impersonate, expect_pintxos_ua):
+    client = poll._make_client(profile)
+    assert client.impersonate == expect_impersonate
+    if expect_pintxos_ua:
+        assert client.headers.get("User-Agent") == poll.USER_AGENT
 
 
 # --- _get() and cookie jar propagation -------------------------------------------
@@ -700,8 +697,8 @@ def _reset_client_jar(monkeypatch):
     poll._client.cookies = curl_cffi.requests.Cookies()
 
 
-def test_get_installs_jar_on_client_when_cookies_file_exists(_reset_client_jar, monkeypatch):
-    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+def test_get_installs_jar_on_client_and_clears_it_when_file_removed(_reset_client_jar, monkeypatch):
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
 
     def fake(url):
         return FakeResponse(b"<html>ok</html>", content_type="text/html")
@@ -717,66 +714,22 @@ def test_get_installs_jar_on_client_when_cookies_file_exists(_reset_client_jar, 
     poll._get("https://www.example.com/a")
     assert poll._client.cookies.jar is installed_jar
 
-
-def test_get_clears_client_cookies_when_file_removed(_reset_client_jar, monkeypatch):
-    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
-
-    def fake(url):
-        return FakeResponse(b"<html>ok</html>", content_type="text/html")
-
-    monkeypatch.setattr(poll._client, "get", fake)
-
-    poll._get("https://www.example.com/a")
-    assert len(poll._client.cookies) == 1
-
     cookie_path().unlink()
 
     poll._get("https://www.example.com/a")
     assert len(poll._client.cookies) == 0
 
 
-def test_auth_null_when_no_cookies_and_fetch_succeeds(feed_id, calls, monkeypatch, _reset_client_jar):
-    monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL TEXT " * 30)
-    poll.poll_all()
-    rows = items()
-    assert len(rows) == 3
-    assert all(row["auth"] is None for row in rows)
-    assert all(row["fallback"] == 0 for row in rows)
-
-
-def test_auth_used_when_cookies_present_and_fetch_succeeds(feed_id, calls, monkeypatch, _reset_client_jar):
-    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
-    monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL TEXT " * 30)
-    poll.poll_all()
-    rows = items()
-    assert len(rows) == 3
-    assert all(row["auth"] == "used" for row in rows)
-    assert all(row["fallback"] == 0 for row in rows)
-
-
-def test_auth_failed_when_cookies_present_and_fetch_fails(feed_id, calls, _reset_client_jar):
-    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
-    poll.poll_all()
-    rows = items()
-    assert len(rows) == 3
-    assert all(row["auth"] == "failed" for row in rows)
-    assert all(row["fallback"] == 1 for row in rows)
-
-
-def test_auth_missing_when_no_cookies_and_fetch_fails(feed_id, calls, _reset_client_jar):
-    poll.poll_all()
-    rows = items()
-    assert len(rows) == 3
-    assert all(row["auth"] == "missing" for row in rows)
-    assert all(row["fallback"] == 1 for row in rows)
-
-
-def test_cookies_only_sent_to_matching_domain():
+def test_cookies_only_sent_to_matching_domain_and_zero_expiry_is_a_session_cookie():
     # Proves domain scoping at the stdlib http.cookiejar level, which both the
     # loader (get_jar) and curl_cffi's Cookies wrapper delegate to: a cookie
     # jarred for .ft.com is offered on a request to www.ft.com, and withheld on
-    # a request to an unrelated domain.
-    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc123"])
+    # a request to an unrelated domain. A "0" expiry (used by some cookies.txt
+    # exporters for session cookies) must still be sent on the wire.
+    write_cookies(
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc123\n"
+        ".ft.com\tTRUE\t/\tFALSE\t0\tsess\tdef456\n"
+    )
     jar = poll.get_jar()
     assert jar is not None
 
@@ -785,21 +738,31 @@ def test_cookies_only_sent_to_matching_domain():
     ft_cookie_header = ft_req.get_header("Cookie")
     assert ft_cookie_header is not None
     assert "sid" in ft_cookie_header
+    assert "sess" in ft_cookie_header
 
     other_req = urllib.request.Request("https://www.example.com/x")
     jar.add_cookie_header(other_req)
     assert other_req.get_header("Cookie") is None
 
 
-def test_zero_expiry_session_cookie_sent_on_wire():
-    # A "0" expiry (used by some cookies.txt exporters for session cookies)
-    # must still be sent on the wire, not silently dropped as expired.
-    _write_cookies([".ft.com\tTRUE\t/\tFALSE\t0\tsid\tabc123"])
-    jar = poll.get_jar()
-    assert jar is not None
-
-    req = urllib.request.Request("https://www.ft.com/x")
-    jar.add_cookie_header(req)
-    ft_cookie_header = req.get_header("Cookie")
-    assert ft_cookie_header is not None
-    assert "sid" in ft_cookie_header
+@pytest.mark.parametrize(
+    "cookies_present, fetch_ok, expected_auth, expected_fallback",
+    [
+        (False, True, None, 0),
+        (True, True, "used", 0),
+        (True, False, "failed", 1),
+        (False, False, "missing", 1),
+    ],
+)
+def test_auth_outcome_from_cookies_presence_and_fetch_result(
+    feed_id, calls, monkeypatch, _reset_client_jar, cookies_present, fetch_ok, expected_auth, expected_fallback
+):
+    if cookies_present:
+        write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+    if fetch_ok:
+        monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL TEXT " * 30)
+    poll.poll_all()
+    rows = items()
+    assert len(rows) == 3
+    assert all(row["auth"] == expected_auth for row in rows)
+    assert all(row["fallback"] == expected_fallback for row in rows)

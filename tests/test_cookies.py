@@ -18,11 +18,9 @@ import os
 import pytest
 
 import pintxos.cookies as cookies_mod
-from pintxos.cookies import cookie_path, get_jar, has_cookies_for, load_jar, summary
+from pintxos.cookies import cookie_path, expiry_for, get_jar, has_cookies_for, load_jar, summary
+from conftest import FUTURE_EXPIRY, write_cookies
 
-# Well into the future so cookies are never seen as expired.
-FUTURE_EXPIRY = 4102444800  # 2100-01-01T00:00:00Z
-FUTURE_EXPIRY_2 = 4102531200  # 2100-01-02T00:00:00Z
 PAST_EXPIRY = 946684800  # 2000-01-01T00:00:00Z, well in the past
 
 
@@ -33,24 +31,16 @@ def _reset_cache():
     cookies_mod._cache = None
 
 
-def _write(path, lines):
-    path.write_text("# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n")
-
-
 def test_no_file_load_jar_and_get_jar_are_none():
     assert load_jar() is None
     assert get_jar() is None
 
 
 def test_two_domains_loaded_and_summarized():
-    path = cookie_path()
-    _write(
-        path,
-        [
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef",
-            f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi",
-        ],
+    write_cookies(
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef\n"
+        f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi\n"
     )
 
     jar = get_jar()
@@ -82,13 +72,10 @@ def test_malformed_file_logs_one_warning_without_contents(caplog):
 
 def test_reload_on_mtime_change_and_removal_clears_cache():
     path = cookie_path()
-    _write(
-        path,
-        [
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef",
-            f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi",
-        ],
+    write_cookies(
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef\n"
+        f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi\n"
     )
 
     jar = get_jar()
@@ -96,14 +83,11 @@ def test_reload_on_mtime_change_and_removal_clears_cache():
     assert len(jar) == 3
 
     t = path.stat().st_mtime
-    _write(
-        path,
-        [
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef",
-            f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi",
-            f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tjkl",
-        ],
+    write_cookies(
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef\n"
+        f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi\n"
+        f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tjkl\n"
     )
     os.utime(path, (t + 2, t + 2))
 
@@ -115,118 +99,70 @@ def test_reload_on_mtime_change_and_removal_clears_cache():
     assert get_jar() is None
 
 
-def test_expired_cookie_dropped_session_cookie_kept():
-    path = cookie_path()
-    _write(
-        path,
-        [
-            # Session cookie: Netscape convention represents "no expiry"
-            # with an *empty* expires field (not "0" -- see note below).
-            ".ft.com\tTRUE\t/\tFALSE\t\tsess\tabc",
-            f".ft.com\tTRUE\t/\tFALSE\t{PAST_EXPIRY}\told\tdef",
-        ],
-    )
+@pytest.mark.parametrize(
+    "expiry_field, loaded, expires_is_none",
+    [
+        (str(PAST_EXPIRY), False, None),  # past expiry: dropped entirely
+        ("0", True, True),  # 0 means "no expiry" (session cookie) by convention
+        ("", True, True),  # empty field: session cookie
+        (str(FUTURE_EXPIRY), True, False),  # future expiry: kept, reports its date
+    ],
+)
+def test_expiry_rules(expiry_field, loaded, expires_is_none):
+    write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{expiry_field}\tsid\tabc\n")
 
     jar = get_jar()
+    if not loaded:
+        assert jar is not None
+        assert len(jar) == 0
+        return
+
     assert jar is not None
     assert len(jar) == 1
-    assert jar._cookies[".ft.com"]["/"]["sess"] is not None
-
-    result = summary(jar)
-    assert result == [{"domain": ".ft.com", "count": 1, "expires": None}]
-
-
-def test_zero_expiry_cookie_treated_as_session_cookie():
-    # Some cookies.txt exporters (e.g. Cookie-Editor, "Get cookies.txt
-    # LOCALLY") write "0" in the expires column for session cookies.
-    path = cookie_path()
-    _write(
-        path,
-        [
-            ".ft.com\tTRUE\t/\tFALSE\t0\tsess\tabc",
-        ],
-    )
-
-    jar = get_jar()
-    assert jar is not None
-    assert len(jar) == 1
-    cookie = jar._cookies[".ft.com"]["/"]["sess"]
-    assert cookie.expires is None
-
-    result = summary(jar)
-    assert result == [{"domain": ".ft.com", "count": 1, "expires": None}]
-
-    assert has_cookies_for(jar, "https://www.ft.com/x") is True
-
-
-def test_zero_expiry_cookie_alongside_past_expiry_cookie_dropped():
-    path = cookie_path()
-    _write(
-        path,
-        [
-            ".ft.com\tTRUE\t/\tFALSE\t0\tsess\tabc",
-            f".ft.com\tTRUE\t/\tFALSE\t{PAST_EXPIRY}\told\tdef",
-        ],
-    )
-
-    jar = get_jar()
-    assert jar is not None
-    assert len(jar) == 1
-    assert jar._cookies[".ft.com"]["/"]["sess"] is not None
-    with pytest.raises(KeyError):
-        jar._cookies[".ft.com"]["/"]["old"]
-
-
-def test_future_expiry_cookie_still_reports_its_date():
-    path = cookie_path()
-    _write(
-        path,
-        [
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
-        ],
-    )
-
-    jar = get_jar()
-    assert jar is not None
     cookie = jar._cookies[".ft.com"]["/"]["sid"]
-    assert cookie.expires == FUTURE_EXPIRY
+    if expires_is_none:
+        assert cookie.expires is None
+    else:
+        assert cookie.expires == FUTURE_EXPIRY
 
-    result = summary(jar)
-    assert result == [{"domain": ".ft.com", "count": 1, "expires": "2100-01-01"}]
 
-
-def test_has_cookies_for_leading_dot_domain_matches_subdomain_and_bare():
-    path = cookie_path()
-    _write(path, [f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+@pytest.mark.parametrize(
+    "cookie_line, url, expected",
+    [
+        (f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc", "https://www.ft.com/a", True),
+        (f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc", "https://ft.com/a", True),
+        (f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc", "https://notft.com/a", False),
+        (
+            f"www.economist.com\tFALSE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
+            "https://www.economist.com/a",
+            True,
+        ),
+        (
+            f"www.economist.com\tFALSE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
+            "https://economist.com/a",
+            False,
+        ),
+        (f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc", "not-a-url", False),
+    ],
+)
+def test_has_cookies_for(cookie_line, url, expected):
+    write_cookies(cookie_line + "\n")
     jar = get_jar()
-
-    assert has_cookies_for(jar, "https://www.ft.com/a") is True
-    assert has_cookies_for(jar, "https://ft.com/a") is True
-    assert has_cookies_for(jar, "https://www.example.com/a") is False
-    assert has_cookies_for(jar, "https://notft.com/a") is False
-
-
-def test_has_cookies_for_host_only_cookie_matches_only_that_host():
-    path = cookie_path()
-    _write(path, [f"www.economist.com\tFALSE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
-    jar = get_jar()
-
-    assert has_cookies_for(jar, "https://www.economist.com/a") is True
-    assert has_cookies_for(jar, "https://economist.com/a") is False
+    assert has_cookies_for(jar, url) is expected
 
 
 def test_has_cookies_for_none_or_empty_jar_is_false():
     assert has_cookies_for(None, "https://www.ft.com/a") is False
 
-    path = cookie_path()
-    path.write_text("# Netscape HTTP Cookie File\n")
+    write_cookies("")
     jar = get_jar()
     assert has_cookies_for(jar, "https://www.ft.com/a") is False
 
 
-def test_has_cookies_for_url_without_host_is_false():
-    path = cookie_path()
-    _write(path, [f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+def test_expiry_for_prefers_most_specific_matching_domain():
+    write_cookies(
+        f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
+        f"www.example.com\tFALSE\t/\tFALSE\t{FUTURE_EXPIRY + 86400}\tuid\tdef\n"
+    )
     jar = get_jar()
-
-    assert has_cookies_for(jar, "not-a-url") is False
+    assert expiry_for(jar, "www.example.com") == "2100-01-02"

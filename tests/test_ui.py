@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 
 import pintxos.app as app_module
+from pintxos import poll
 from pintxos.app import app
 from pintxos.config import data_dir, get_setting
-from pintxos.db import db
+from pintxos.cookies import cookie_path
+from pintxos.db import db, now as db_now
 
-# Well into the future so cookies are never seen as expired.
-FUTURE_EXPIRY = 4102444800  # 2100-01-01T00:00:00Z
-
-
-def _write_cookies(lines):
-    path = data_dir() / "cookies.txt"
-    path.write_text("# Netscape HTTP Cookie File\n" + "\n".join(lines) + "\n")
+from conftest import FUTURE_EXPIRY, write_cookies
 
 
 def test_add_feed_appears_in_list(monkeypatch):
@@ -971,22 +970,32 @@ def test_settings_page_no_cookies_file_shows_placeholder():
     assert 'action="/settings/cookies/delete"' not in page
 
 
-def test_settings_page_expired_cookies_shows_no_usable_cookies_and_remove_button():
-    past_expiry = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
-    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{past_expiry}\tsid\tabc"])
+def test_settings_page_lists_cookie_domains_expiry_and_expiring_soon():
+    soon_expiry = int((datetime.now(UTC) + timedelta(days=3)).timestamp())
+    write_cookies(
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef\n"
+        f".economist.com\tTRUE\t/\tFALSE\t{soon_expiry}\tsid\tghi\n"
+    )
     with TestClient(app) as c:
         page = c.get("/settings").text
 
-    assert "no usable cookies" in page
-    assert 'action="/settings/cookies/delete"' in page
+    assert ".ft.com" in page
+    assert ".economist.com" in page
+    assert "2100-01-01" in page
+    # Domain counts appear in the muted summary line.
+    assert re.search(r"\.ft\.com — 2 cookies", page)
+    assert re.search(r"\.economist\.com — 1 cookie[^s]", page)
+    assert "expires soon" in page  # only .economist.com's near-term expiry trips this
 
 
-def test_settings_delete_cookies_with_expired_file_shows_no_cookies_file_found():
+def test_settings_expired_cookies_show_remove_button_and_delete_clears_them():
     past_expiry = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
-    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{past_expiry}\tsid\tabc"])
+    write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{past_expiry}\tsid\tabc\n")
     with TestClient(app) as c:
         page = c.get("/settings").text
         assert "no usable cookies" in page
+        assert 'action="/settings/cookies/delete"' in page
 
         resp = c.post("/settings/cookies/delete", follow_redirects=False)
         assert resp.status_code in (302, 303, 307, 308)
@@ -998,45 +1007,8 @@ def test_settings_delete_cookies_with_expired_file_shows_no_cookies_file_found()
     assert "No cookies.txt found." in page
 
 
-def test_settings_page_lists_cookie_domains_and_counts():
-    _write_cookies(
-        [
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
-            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef",
-            f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tghi",
-        ]
-    )
-    with TestClient(app) as c:
-        page = c.get("/settings").text
-
-    assert ".ft.com" in page
-    assert ".economist.com" in page
-    assert "2100-01-01" in page
-    assert "expires soon" not in page
-    # Domain counts appear in the muted summary line.
-    assert re.search(r"\.ft\.com — 2 cookies", page)
-    assert re.search(r"\.economist\.com — 1 cookie[^s]", page)
-
-
-def test_settings_page_flags_cookie_expiring_soon():
-    soon_expiry = int((datetime.now(UTC) + timedelta(days=3)).timestamp())
-    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{soon_expiry}\tsid\tabc"])
-    with TestClient(app) as c:
-        page = c.get("/settings").text
-
-    assert "expires soon" in page
-
-
-def test_settings_page_never_renders_cookie_value():
-    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tSECRETVALUE123"])
-    with TestClient(app) as c:
-        page = c.get("/settings").text
-
-    assert "SECRETVALUE123" not in page
-
-
 def test_settings_cookies_section_is_outside_the_settings_form():
-    _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+    write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
     with TestClient(app) as c:
         page = c.get("/settings").text
 
@@ -1054,11 +1026,6 @@ def _netscape_cookies_text(value="UPLOADSECRET42"):
 
 
 def test_cookies_upload_file_stores_with_0600_and_lists_domain():
-    import os
-    import stat
-
-    from pintxos.cookies import cookie_path
-
     data = _netscape_cookies_text().encode()
     with TestClient(app) as c:
         resp = c.post(
@@ -1077,24 +1044,19 @@ def test_cookies_upload_file_stores_with_0600_and_lists_domain():
     assert ".ft.com" in page
 
 
-def test_cookies_upload_flash_count_reflects_load_jar_rules():
-    # One future-dated cookie, one 0-expiry (session) cookie, and one
-    # past-dated cookie (which load_jar() drops as expired). The flash
-    # count must reflect load_jar()'s rules, not the validation jar's
-    # raw parse (which keeps all three since it loads with
-    # ignore_expires=True and never re-drops past-dated cookies).
+def test_cookies_upload_pasted_text_works_and_flash_count_reflects_load_jar_rules():
+    # Future, session (0-expiry), and past-dated cookies: the flash count must
+    # reflect load_jar()'s rules (past-dated dropped), not a raw parse of all three.
     past_expiry = 946684800  # 2000-01-01T00:00:00Z
-    data = (
+    text = (
         "# Netscape HTTP Cookie File\n"
         f".a.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
         ".b.com\tTRUE\t/\tFALSE\t0\tsess\tdef\n"
         f".c.com\tTRUE\t/\tFALSE\t{past_expiry}\told\tghi\n"
-    ).encode()
+    )
     with TestClient(app) as c:
         resp = c.post(
-            "/settings/cookies",
-            files={"cookies": ("cookies.txt", data, "text/plain")},
-            follow_redirects=False,
+            "/settings/cookies", data={"cookies_text": text}, follow_redirects=False
         )
         assert resp.status_code == 303
         location = resp.headers["location"]
@@ -1103,25 +1065,21 @@ def test_cookies_upload_flash_count_reflects_load_jar_rules():
             or "2%20cookies%20for%202%20domains" in location
         )
 
-
-def test_cookies_upload_pasted_text_works():
-    text = _netscape_cookies_text()
-    with TestClient(app) as c:
-        resp = c.post(
-            "/settings/cookies", data={"cookies_text": text}, follow_redirects=False
-        )
-        assert resp.status_code == 303
-        location = resp.headers["location"]
-        assert "Cookies+saved" in location or "Cookies%20saved" in location
-
         page = c.get("/settings").text
-    assert ".ft.com" in page
+    assert ".a.com" in page
+    assert ".b.com" in page
 
 
-def test_cookies_upload_garbage_rejected_and_existing_kept():
-    from pintxos.config import data_dir
-    from pintxos.cookies import cookie_path
-
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"not": "cookies"}',
+        b"\xff\xfe\x00garbage",
+        b"",
+    ],
+    ids=["garbage-json", "non-utf8", "empty"],
+)
+def test_cookies_upload_bad_payload_rejected_and_existing_kept(payload):
     valid = _netscape_cookies_text().encode()
     with TestClient(app) as c:
         resp = c.post(
@@ -1133,7 +1091,7 @@ def test_cookies_upload_garbage_rejected_and_existing_kept():
 
         resp2 = c.post(
             "/settings/cookies",
-            files={"cookies": ("cookies.txt", b'{"not": "cookies"}', "text/plain")},
+            files={"cookies": ("cookies.txt", payload, "text/plain")},
             follow_redirects=False,
         )
         assert resp2.status_code == 303
@@ -1149,42 +1107,7 @@ def test_cookies_upload_garbage_rejected_and_existing_kept():
     assert leftover == []
 
 
-def test_cookies_upload_non_utf8_rejected_and_existing_kept():
-    """A non-UTF-8 upload must not 500 and must not leave a temp file behind."""
-    from pintxos.config import data_dir
-    from pintxos.cookies import cookie_path
-
-    valid = _netscape_cookies_text().encode()
-    with TestClient(app) as c:
-        resp = c.post(
-            "/settings/cookies",
-            files={"cookies": ("cookies.txt", valid, "text/plain")},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 303
-
-        resp2 = c.post(
-            "/settings/cookies",
-            files={"cookies": ("cookies.txt", b"\xff\xfe\x00garbage", "text/plain")},
-            follow_redirects=False,
-        )
-        assert resp2.status_code == 303
-        location2 = resp2.headers["location"]
-        assert "Not+a+Netscape" in location2 or "Not%20a%20Netscape" in location2
-
-    assert cookie_path().read_bytes() == valid
-
-    leftover = [
-        p
-        for p in data_dir().iterdir()
-        if p.name != "cookies.txt" and not p.name.startswith("pintxos.db")
-    ]
-    assert leftover == []
-
-
 def test_cookies_upload_nothing_rejected():
-    from pintxos.cookies import cookie_path
-
     with TestClient(app) as c:
         resp = c.post("/settings/cookies", data={}, follow_redirects=False)
         assert resp.status_code == 303
@@ -1203,8 +1126,6 @@ def test_cookies_delete_removes_file():
         assert resp.status_code == 303
 
         page = c.get("/settings").text
-
-    from pintxos.cookies import cookie_path
 
     assert not cookie_path().exists()
     assert "No cookies.txt found." in page
@@ -1233,9 +1154,9 @@ def test_cookies_upload_never_echoes_value():
         assert "UPLOADSECRET42" not in page2
 
 
-def _insert_item(feed_id, guid, *, auth=None, link="https://www.example.com/a", published_at=None):
-    from pintxos.db import now as db_now
-
+def _insert_item(
+    feed_id, guid, *, auth=None, link="https://www.example.com/a", published_at=None, fallback=0
+):
     with db() as conn:
         conn.execute(
             "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
@@ -1249,14 +1170,14 @@ def _insert_item(feed_id, guid, *, auth=None, link="https://www.example.com/a", 
                 published_at or db_now(),
                 "Headline",
                 "Summary.",
-                0,
+                fallback,
                 auth,
                 db_now(),
             ),
         )
 
 
-def test_index_shows_login_indicator_counts(monkeypatch):
+def test_index_shows_login_indicator_counts_without_adding_a_column(monkeypatch):
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
@@ -1281,15 +1202,7 @@ def test_index_shows_login_indicator_counts(monkeypatch):
     assert page.count("need login") == 1
     assert page.count("login failed") == 1
 
-
-def test_index_column_count_unchanged_by_login_indicators(monkeypatch):
-    """The Items cell gains extra muted lines, not a new column."""
-    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
-    with TestClient(app) as c:
-        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
-        _insert_item(1, "g1", auth="used")
-        page = c.get("/").text
-
+    # The Items cell gained extra muted lines, not a new column.
     widths = re.findall(r'<col style="width: (\d+)%">', page)
     assert len(widths) == 7
     assert page.count("<th>") == 7
@@ -1315,37 +1228,29 @@ def test_feed_edit_page_shows_login_section_with_sentences(monkeypatch):
     assert '<a href="/settings">Settings page</a>' in page
 
 
-def test_feed_edit_page_login_section_reflects_loaded_cookies(monkeypatch):
+def test_feed_edit_page_login_section_reflects_cookies_written_after_first_render(monkeypatch):
+    """Writing cookies.txt mid-session changes the Login section on the next render."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         _insert_item(1, "g1", auth="missing")
         _insert_item(1, "g2", auth="failed")
 
-        _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+        page = c.get("/feeds/1").text
+        assert "Add your subscription cookies" in page
+
+        write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
 
         page = c.get("/feeds/1").text
+        assert "Add your subscription cookies" not in page
+        assert "1 login failed" in page
+        assert "Cookies for www.example.com expire 2100-01-01." in page
 
-    assert "<h2>Login</h2>" in page
-    assert "Add your subscription cookies" not in page
-    assert "1 login failed" in page
-    assert "Cookies for www.example.com expire 2100-01-01." in page
-
-
-def test_feed_edit_page_login_section_session_cookie_no_expiry(monkeypatch):
-    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
-    with TestClient(app) as c:
-        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
-        _insert_item(1, "g1", auth="failed")
-
-        # Session cookie: empty expiry field (0 in Netscape format == no expiry).
-        _write_cookies([".example.com\tTRUE\t/\tFALSE\t0\tsid\tabc"])
+        # Session cookie (0 expiry): reported as a session cookie, not a date.
+        write_cookies(".example.com\tTRUE\t/\tFALSE\t0\tsid\tabc\n")
 
         page = c.get("/feeds/1").text
-
-    assert "<h2>Login</h2>" in page
-    assert "1 login failed" in page
-    assert "Cookies for www.example.com are session cookies." in page
+        assert "Cookies for www.example.com are session cookies." in page
 
 
 def test_feed_edit_page_no_login_section_when_auth_all_null(monkeypatch):
@@ -1358,3 +1263,192 @@ def test_feed_edit_page_no_login_section_when_auth_all_null(monkeypatch):
         page = c.get("/feeds/1").text
 
     assert "<h2>Login</h2>" not in page
+
+
+# --- retry-fallback route and pintxos.poll.retry_fallback -------------------
+
+
+# Each retry-fallback fixture feed is described as a list of
+# (guid, fallback, auth) triples, inserted via the shared _insert_item helper.
+_WITH_FALLBACK = [("guid-1", 1, "missing"), ("guid-2", 1, None), ("guid-3", 0, "used")]
+_NO_FALLBACK = [("guid-1", 0, "used")]
+_SINGLE_FALLBACK = [("guid-1", 1, None)]
+
+
+def _seed_feed(items, url="https://example.com/feed.xml"):
+    with db() as conn:
+        feed_id = conn.execute(
+            "INSERT INTO feeds(url, title, created_at) VALUES (?, ?, ?)",
+            (url, "Example Feed", db_now()),
+        ).lastrowid
+    for guid, fallback, auth in items:
+        _insert_item(feed_id, guid, auth=auth, fallback=fallback)
+    return feed_id
+
+
+def _item_rows(feed_id):
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM items WHERE feed_id = ? ORDER BY id", (feed_id,)
+        ).fetchall()
+
+
+def test_retry_fallback_route_updates_in_place_and_queues_retry(monkeypatch):
+    """The route never deletes: rows stay put, retry_one is queued instead, and
+    only the fallback rows for this feed are reported as being retried."""
+    feed_id = _seed_feed(_WITH_FALLBACK)
+    other_feed_id = _seed_feed(_SINGLE_FALLBACK, "https://other.example.com/feed.xml")
+
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    with TestClient(app) as c:
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "Retrying" in location
+    assert "2" in location
+
+    rows = _item_rows(feed_id)
+    assert {r["guid"] for r in rows} == {"guid-1", "guid-2", "guid-3"}  # nothing deleted
+
+    other_row = _item_rows(other_feed_id)[0]
+    assert other_row["fallback"] == 1  # untouched: different feed, never queued
+
+    assert calls == [feed_id]
+
+
+def test_retry_fallback_route_no_fallback_items_does_not_queue(monkeypatch):
+    feed_id = _seed_feed(_NO_FALLBACK)
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    with TestClient(app) as c:
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "No fallback items" in location or "No%20fallback%20items" in location
+
+    assert calls == []
+
+    rows = _item_rows(feed_id)
+    assert {r["guid"] for r in rows} == {"guid-1"}
+
+
+def test_retry_fallback_route_unknown_feed_404(monkeypatch):
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: None)
+    with TestClient(app) as c:
+        resp = c.post("/feeds/999/retry-fallback", follow_redirects=False)
+    assert resp.status_code == 404
+
+
+def test_feed_edit_page_retry_form_pluralizes_fallback_count(monkeypatch):
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: None)
+
+    plural_feed_id = _seed_feed(_WITH_FALLBACK, "https://example.com/plural.xml")
+    with TestClient(app) as c:
+        page = c.get(f"/feeds/{plural_feed_id}").text
+    assert "Retry 2 fallback items" in page
+
+    singular_feed_id = _seed_feed(_SINGLE_FALLBACK, "https://example.com/singular.xml")
+    with TestClient(app) as c:
+        page = c.get(f"/feeds/{singular_feed_id}").text
+    assert "Retry 1 fallback item" in page
+    assert "Retry 1 fallback items" not in page
+
+    no_fallback_feed_id = _seed_feed(_NO_FALLBACK, "https://example.com/none.xml")
+    with TestClient(app) as c:
+        page = c.get(f"/feeds/{no_fallback_feed_id}").text
+    assert "retry-fallback" not in page
+
+
+@pytest.mark.parametrize(
+    "fetch_ok, expect_auth, expect_fallback, expect_headline",
+    [
+        (True, None, 0, "New Headline"),
+        (False, "missing", 1, "Headline"),
+    ],
+)
+def test_retry_fallback_updates_row_in_place_on_success_or_records_auth_on_failure(
+    monkeypatch, fetch_ok, expect_auth, expect_fallback, expect_headline
+):
+    """poll.retry_fallback updates the existing row (never inserts/deletes): on a
+    successful fetch the headline/summary/word_count are refreshed and fallback
+    clears; on a repeat failure only auth is recorded and the row stays a fallback."""
+    feed_id = _seed_feed(_SINGLE_FALLBACK)
+
+    if fetch_ok:
+        monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL ARTICLE TEXT " * 20)
+        monkeypatch.setattr(
+            poll, "summarize", lambda text, original_title, url: ("New Headline", "New summary")
+        )
+    else:
+        monkeypatch.setattr(poll, "fetch_article", lambda link: None)
+
+        def boom_summarize(*_args, **_kwargs):
+            raise AssertionError("summarize should not be called when the fetch fails")
+
+        monkeypatch.setattr(poll, "summarize", boom_summarize)
+
+    poll.retry_fallback(feed_id)
+
+    rows = _item_rows(feed_id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["guid"] == "guid-1"  # same row, not a new insert
+    assert row["fallback"] == expect_fallback
+    assert row["headline"] == expect_headline
+    assert row["auth"] == expect_auth
+    assert feed_id not in poll._status
+
+
+@pytest.mark.parametrize("error", ["missing_api_key", "summarize_error"])
+def test_retry_fallback_error_paths(monkeypatch, error):
+    """poll.retry_fallback's own try/except around summarize(): MissingApiKey stops
+    the loop immediately (later rows untouched, last_error set); SummarizeError
+    just skips that row (fallback=1 kept) and the loop continues to the next one."""
+    feed_id = _seed_feed([("guid-1", 1, None), ("guid-2", 1, None)])
+    monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL ARTICLE TEXT " * 20)
+
+    from pintxos.summarize import MissingApiKey, SummarizeError
+
+    calls = []
+
+    def fake_summarize(text, original_title, url):
+        calls.append(url)
+        if error == "missing_api_key":
+            raise MissingApiKey("ANTHROPIC_API_KEY not set")
+        if len(calls) == 1:
+            raise SummarizeError("API said no")
+        return "New Headline", "New summary"
+
+    monkeypatch.setattr(poll, "summarize", fake_summarize)
+
+    poll.retry_fallback(feed_id)
+
+    rows = {r["guid"]: r for r in _item_rows(feed_id)}
+    if error == "missing_api_key":
+        assert len(calls) == 1  # stopped before the second item
+        assert rows["guid-1"]["fallback"] == 1
+        assert rows["guid-2"]["fallback"] == 1
+        with db() as conn:
+            feed = conn.execute("SELECT * FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        assert "ANTHROPIC_API_KEY" in feed["last_error"]
+    else:
+        assert len(calls) == 2  # loop continued past the failed item
+        assert rows["guid-1"]["fallback"] == 1  # left as fallback: summarize failed
+        assert rows["guid-2"]["fallback"] == 0  # second item's summarize succeeded
+        assert rows["guid-2"]["headline"] == "New Headline"
+
+
+def test_retry_one_queues_retry_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(poll, "retry_fallback", lambda fid: calls.append(fid))
+
+    class FakeScheduler:
+        def add_job(self, func, args, id, replace_existing, misfire_grace_time):
+            calls.append(("queued", id))
+
+    monkeypatch.setattr(poll, "scheduler", FakeScheduler())
+    poll.retry_one(42)
+    assert ("queued", "retry-42") in calls

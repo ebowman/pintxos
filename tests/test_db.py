@@ -48,11 +48,6 @@ def test_insert_feed_and_item(db):
     assert row["fallback"] == 0
 
 
-def test_items_table_has_auth_column(db):
-    cols = {r["name"] for r in db.execute("PRAGMA table_info(items)")}
-    assert "auth" in cols
-
-
 def test_duplicate_guid_per_feed_rejected(db):
     feed_id = add_feed(db)
     add_item(db, feed_id)

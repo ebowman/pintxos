@@ -425,7 +425,7 @@ async def upload_cookies(
     if len(data) > 1024 * 1024:  # 1 MiB
         return _redirect("/settings", err="File too large")
 
-    tmp = tempfile.NamedTemporaryFile(dir=data_dir(), delete=False)
+    tmp = tempfile.NamedTemporaryFile(dir=data_dir(), delete=False)  # 0600 by default; os.replace keeps the mode
     tmp_path = Path(tmp.name)
     tmp.write(data)
     tmp.close()
@@ -437,7 +437,6 @@ async def upload_cookies(
         if jar is None:
             return _redirect("/settings", err="Not a Netscape cookies.txt file")
 
-        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, cookie_path())
         replaced = True
     finally:

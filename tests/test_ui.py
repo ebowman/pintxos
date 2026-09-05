@@ -1016,3 +1016,130 @@ def test_settings_cookies_section_is_outside_the_settings_form():
     form_close = page.index("</form>", form_start)
     cookies_heading = page.index("Subscription cookies")
     assert form_close < cookies_heading
+
+
+def _netscape_cookies_text(value="UPLOADSECRET42"):
+    return (
+        "# Netscape HTTP Cookie File\n"
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\t{value}\n"
+    )
+
+
+def test_cookies_upload_file_stores_with_0600_and_lists_domain():
+    import os
+    import stat
+
+    from pintxos.cookies import cookie_path
+
+    data = _netscape_cookies_text().encode()
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings/cookies",
+            files={"cookies": ("cookies.txt", data, "text/plain")},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "Cookies+saved" in location or "Cookies%20saved" in location
+
+        mode = stat.S_IMODE(os.stat(cookie_path()).st_mode)
+        assert mode == 0o600
+
+        page = c.get("/settings").text
+    assert ".ft.com" in page
+
+
+def test_cookies_upload_pasted_text_works():
+    text = _netscape_cookies_text()
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings/cookies", data={"cookies_text": text}, follow_redirects=False
+        )
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "Cookies+saved" in location or "Cookies%20saved" in location
+
+        page = c.get("/settings").text
+    assert ".ft.com" in page
+
+
+def test_cookies_upload_garbage_rejected_and_existing_kept():
+    from pintxos.config import data_dir
+    from pintxos.cookies import cookie_path
+
+    valid = _netscape_cookies_text().encode()
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings/cookies",
+            files={"cookies": ("cookies.txt", valid, "text/plain")},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        resp2 = c.post(
+            "/settings/cookies",
+            files={"cookies": ("cookies.txt", b'{"not": "cookies"}', "text/plain")},
+            follow_redirects=False,
+        )
+        assert resp2.status_code == 303
+        assert "err=" in resp2.headers["location"]
+
+    assert cookie_path().read_bytes() == valid
+
+    leftover = [
+        p
+        for p in data_dir().iterdir()
+        if p.name != "cookies.txt" and not p.name.startswith("pintxos.db")
+    ]
+    assert leftover == []
+
+
+def test_cookies_upload_nothing_rejected():
+    from pintxos.cookies import cookie_path
+
+    with TestClient(app) as c:
+        resp = c.post("/settings/cookies", data={}, follow_redirects=False)
+        assert resp.status_code == 303
+        assert "err=" in resp.headers["location"]
+        assert "Nothing" in resp.headers["location"] or "err=Nothing" in resp.headers["location"]
+
+    assert not cookie_path().exists()
+
+
+def test_cookies_delete_removes_file():
+    text = _netscape_cookies_text()
+    with TestClient(app) as c:
+        c.post("/settings/cookies", data={"cookies_text": text}, follow_redirects=False)
+
+        resp = c.post("/settings/cookies/delete", follow_redirects=False)
+        assert resp.status_code == 303
+
+        page = c.get("/settings").text
+
+    from pintxos.cookies import cookie_path
+
+    assert not cookie_path().exists()
+    assert "No cookies.txt found." in page
+    assert "Remove" not in page
+
+
+def test_cookies_upload_never_echoes_value():
+    text = _netscape_cookies_text()
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings/cookies", data={"cookies_text": text}, follow_redirects=False
+        )
+        assert "UPLOADSECRET42" not in resp.headers["location"]
+
+        page = c.get("/settings").text
+        assert "UPLOADSECRET42" not in page
+
+        resp2 = c.post(
+            "/settings/cookies",
+            files={"cookies": ("cookies.txt", text.encode(), "text/plain")},
+            follow_redirects=False,
+        )
+        assert "UPLOADSECRET42" not in resp2.headers["location"]
+
+        page2 = c.get("/settings").text
+        assert "UPLOADSECRET42" not in page2

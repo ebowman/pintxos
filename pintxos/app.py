@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import os
 import sqlite3
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
 from apscheduler.jobstores.base import JobLookupError
-from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from pintxos import adfilter
-from pintxos.config import get_setting, is_truthy
+from pintxos.config import data_dir, get_setting, is_truthy
 from pintxos.cookies import cookie_path, get_jar, summary
 from pintxos.db import db, init_db, now
 from pintxos.feed_out import render_rss
@@ -355,3 +357,48 @@ def save_settings(
         reschedule(poll_minutes_i)
 
     return _redirect("/settings", msg="Saved")
+
+
+MAX_COOKIES_FILE_SIZE = 1024 * 1024  # 1 MiB
+
+
+@app.post("/settings/cookies")
+async def upload_cookies(
+    cookies: UploadFile | None = File(None),
+    cookies_text: str = Form(""),
+) -> Response:
+    data: bytes = b""
+    if cookies is not None:
+        data = await cookies.read()
+    if not data and cookies_text.strip():
+        data = cookies_text.encode()
+    if not data:
+        return _redirect("/settings", err="Nothing to upload")
+    if len(data) > MAX_COOKIES_FILE_SIZE:
+        return _redirect("/settings", err="File too large")
+
+    tmp = tempfile.NamedTemporaryFile(dir=data_dir(), delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        tmp.write(data)
+        tmp.close()
+        jar = http.cookiejar.MozillaCookieJar(str(tmp_path))
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except (http.cookiejar.LoadError, UnicodeDecodeError, ValueError):
+        tmp_path.unlink(missing_ok=True)
+        return _redirect("/settings", err="Not a Netscape cookies.txt file")
+
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, cookie_path())
+
+    domains = summary(jar)
+    count = sum(entry["count"] for entry in domains)
+    return _redirect(
+        "/settings", msg=f"Cookies saved: {count} cookies for {len(domains)} domains"
+    )
+
+
+@app.post("/settings/cookies/delete")
+def delete_cookies() -> Response:
+    cookie_path().unlink(missing_ok=True)
+    return _redirect("/settings", msg="Cookies removed")

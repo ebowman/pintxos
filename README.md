@@ -181,33 +181,27 @@ The ad filter toggle and extra patterns can also be changed on the Settings page
 ## Paywalled feeds
 
 For sites you subscribe to, Pintxøs can fetch the full article using your
-own logged-in browser cookies instead of falling back to the feed's summary.
-Each site's cookies are only ever sent to that same site.
+own logged-in browser cookies instead of falling back to the feed's
+summary; each site's cookies are only ever sent to that same site.
 
-To get a cookies file, install the [Cookie-Editor](https://cookie-editor.com)
-browser extension (Safari, Chrome, Firefox), open the site while logged in,
-and use Export → Netscape — "Netscape" is just the name of the plain-text
-`cookies.txt` format. Paste the exported text into the "Subscription cookies"
-box on the Settings page, or save it as a file and upload it there instead.
-On macOS, if you'd rather not install an extension, run
-`python -m pintxos.safari_cookies --domain ft.com --domain economist.com` on
-the Mac that runs Pintxøs — it reads cookies straight out of Safari's own
-cookie store (if it reports it cannot read the file, grant Full Disk Access
-to your terminal app). A "Get cookies.txt LOCALLY" extension works too, as
-another Chrome/Firefox option.
+To get a cookies file, install the
+[Cookie-Editor](https://cookie-editor.com) browser extension (Safari,
+Chrome, Firefox), open the site while logged in, and use Export →
+Netscape — "Netscape" is just the name of the plain-text format. Paste the
+exported text into the "Subscription cookies" box on the Settings page, or
+upload it as a file there, or copy it to `<PINTXOS_DATA_DIR>/cookies.txt`
+by hand.
 
-The uploaded or pasted cookies are written to
-`<PINTXOS_DATA_DIR>/cookies.txt` and picked up on the next poll without a
-restart; you can also copy a file there by hand. To refetch items that were
-already stored before the cookies were in place, use the "Retry N fallback
-items" button on the feed's page (each retried item costs one summary call).
+Cookies are picked up on the next poll, no restart needed. Use the "Retry
+N fallback items" button on the feed's page to re-summarize items already
+stored as teasers (one summary call each). The Feeds page shows "via
+login", "need login" and "login failed" counts per feed; once items start
+showing "login failed", export a fresh cookies file (Settings shows the
+earliest expiry).
 
-You can tell whether it's working from the Feeds page, which shows
-"N via login", "N need login" and "N login failed" counts per feed; the
-feed's own page explains these and shows the earliest cookie expiry, and the
-RSS description says "Read with your subscription." when a login fetch
-succeeded. Cookies expire — once items start showing "login failed", export
-a fresh cookies file and upload it again.
+Fetches impersonate a real browser (`PINTXOS_IMPERSONATE`, default
+`safari17_0`), because these sites reject plain HTTP clients before ever
+looking at a cookie.
 
 ## Security warning
 
@@ -216,14 +210,11 @@ delete, or repoll feeds, and anyone who can reach an output feed URL can read
 it — this is by design, so RSS readers can fetch feeds without credentials.
 Only run Pintxøs on `localhost`, over Tailscale/a VPN, or behind a reverse
 proxy that handles authentication for you. **Do not expose it directly to the
-public internet**.
-
-If you use the paywalled-feeds feature above, the cookies file is equivalent
-to being logged in to those sites: it's stored unencrypted (mode `0600`) in
-the data directory and is never sent anywhere except the matching site, so
-keep it on a private machine and remove it from the Settings page once you
-stop using it. This is meant for reading articles with your own account —
-check the publisher's terms before relying on it.
+public internet**. If you use the paywalled-feeds feature above, the cookies
+file is equivalent to being logged in to those sites and is stored
+unencrypted in the data directory, so keep it on a private machine and
+remove it from Settings once you stop using it; it's meant for reading with
+your own account, so check the publisher's terms.
 
 ## API key
 

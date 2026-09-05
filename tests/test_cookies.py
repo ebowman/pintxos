@@ -136,6 +136,65 @@ def test_expired_cookie_dropped_session_cookie_kept():
     assert result == [{"domain": ".ft.com", "count": 1, "expires": None}]
 
 
+def test_zero_expiry_cookie_treated_as_session_cookie():
+    # Some cookies.txt exporters (e.g. Cookie-Editor, "Get cookies.txt
+    # LOCALLY") write "0" in the expires column for session cookies.
+    path = cookie_path()
+    _write(
+        path,
+        [
+            ".ft.com\tTRUE\t/\tFALSE\t0\tsess\tabc",
+        ],
+    )
+
+    jar = get_jar()
+    assert jar is not None
+    assert len(jar) == 1
+    cookie = jar._cookies[".ft.com"]["/"]["sess"]
+    assert cookie.expires is None
+
+    result = summary(jar)
+    assert result == [{"domain": ".ft.com", "count": 1, "expires": None}]
+
+    assert has_cookies_for(jar, "https://www.ft.com/x") is True
+
+
+def test_zero_expiry_cookie_alongside_past_expiry_cookie_dropped():
+    path = cookie_path()
+    _write(
+        path,
+        [
+            ".ft.com\tTRUE\t/\tFALSE\t0\tsess\tabc",
+            f".ft.com\tTRUE\t/\tFALSE\t{PAST_EXPIRY}\told\tdef",
+        ],
+    )
+
+    jar = get_jar()
+    assert jar is not None
+    assert len(jar) == 1
+    assert jar._cookies[".ft.com"]["/"]["sess"] is not None
+    with pytest.raises(KeyError):
+        jar._cookies[".ft.com"]["/"]["old"]
+
+
+def test_future_expiry_cookie_still_reports_its_date():
+    path = cookie_path()
+    _write(
+        path,
+        [
+            f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc",
+        ],
+    )
+
+    jar = get_jar()
+    assert jar is not None
+    cookie = jar._cookies[".ft.com"]["/"]["sid"]
+    assert cookie.expires == FUTURE_EXPIRY
+
+    result = summary(jar)
+    assert result == [{"domain": ".ft.com", "count": 1, "expires": "2100-01-01"}]
+
+
 def test_has_cookies_for_leading_dot_domain_matches_subdomain_and_bare():
     path = cookie_path()
     _write(path, [f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])

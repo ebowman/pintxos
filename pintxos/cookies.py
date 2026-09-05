@@ -36,16 +36,35 @@ def cookie_path() -> Path:
 
 
 def load_jar() -> http.cookiejar.MozillaCookieJar | None:
-    """Load cookies.txt fresh from disk. None if missing or unparseable."""
+    """Load cookies.txt fresh from disk. None if missing or unparseable.
+
+    Loaded with ignore_expires=True and then post-processed, rather than
+    relying on MozillaCookieJar.load's own expiry filtering: some
+    cookies.txt exporters (e.g. browser extensions like Cookie-Editor or
+    "Get cookies.txt LOCALLY") write an expiry of `0` for session cookies,
+    which `load(ignore_expires=False)` treats as an epoch timestamp and
+    silently drops as already-expired. We instead treat expiry `0` as
+    "session cookie" (no expiry) and drop only cookies with a real,
+    past expiry ourselves.
+    """
     path = cookie_path()
     if not path.exists():
         return None
     jar = http.cookiejar.MozillaCookieJar(str(path))
     try:
-        jar.load(ignore_discard=True, ignore_expires=False)
+        jar.load(ignore_discard=True, ignore_expires=True)
     except (http.cookiejar.LoadError, OSError):
         log.warning("cookies.txt at %s could not be loaded as a Netscape cookie file", path)
         return None
+
+    now = int(time.time())
+    for cookie in list(jar):
+        if cookie.expires == 0:
+            cookie.expires = None
+            cookie.discard = True
+        elif cookie.expires is not None and cookie.expires < now:
+            jar.clear(cookie.domain, cookie.path, cookie.name)
+
     return jar
 
 

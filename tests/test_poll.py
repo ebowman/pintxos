@@ -788,3 +788,29 @@ def test_cookies_only_sent_to_matching_domain():
     # picked up the ft.com cookie under the example.com domain (or at all --
     # per-request `cookies=` is not merged into `client.cookies`).
     assert "example.com" not in [c.domain for c in client.cookies.jar]
+
+
+def test_zero_expiry_session_cookie_sent_on_wire():
+    # A "0" expiry (used by some cookies.txt exporters for session cookies)
+    # must still be sent on the wire, not silently dropped as expired.
+    _write_cookies([".ft.com\tTRUE\t/\tFALSE\t0\tsid\tabc123"])
+    jar = poll.get_jar()
+    assert jar is not None
+
+    seen_cookie_headers = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_cookie_headers[str(request.url)] = request.headers.get("cookie")
+        return httpx.Response(200, text="<html>ok</html>")
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        cookies=httpx.Cookies(jar),
+        follow_redirects=True,
+    )
+
+    client.get("https://www.ft.com/x")
+
+    ft_cookie_header = seen_cookie_headers["https://www.ft.com/x"]
+    assert ft_cookie_header is not None
+    assert "sid" in ft_cookie_header

@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from pintxos import adfilter
 from pintxos.config import data_dir, get_setting, is_truthy
-from pintxos.cookies import cookie_path, get_jar, summary
+from pintxos.cookies import cookie_path, get_jar, load_jar, summary
 from pintxos.db import db, init_db, now
 from pintxos.feed_out import render_rss
 from pintxos.poll import _status as poll_status
@@ -391,8 +391,13 @@ async def upload_cookies(
     os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, cookie_path())
 
-    domains = summary(jar)
-    count = sum(entry["count"] for entry in domains)
+    # Recompute the flash counts from load_jar() (not the validation jar
+    # above) so they reflect the 0-expiry-as-session-cookie and
+    # past-expiry-dropped rules that will actually apply when the saved
+    # file is loaded for polling.
+    jar = load_jar()
+    domains = summary(jar) if jar else []
+    count = len(jar) if jar else 0
     return _redirect(
         "/settings", msg=f"Cookies saved: {count} cookies for {len(domains)} domains"
     )

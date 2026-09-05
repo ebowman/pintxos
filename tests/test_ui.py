@@ -1049,6 +1049,33 @@ def test_cookies_upload_file_stores_with_0600_and_lists_domain():
     assert ".ft.com" in page
 
 
+def test_cookies_upload_flash_count_reflects_load_jar_rules():
+    # One future-dated cookie, one 0-expiry (session) cookie, and one
+    # past-dated cookie (which load_jar() drops as expired). The flash
+    # count must reflect load_jar()'s rules, not the validation jar's
+    # raw parse (which keeps all three since it loads with
+    # ignore_expires=True and never re-drops past-dated cookies).
+    past_expiry = 946684800  # 2000-01-01T00:00:00Z
+    data = (
+        "# Netscape HTTP Cookie File\n"
+        f".a.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
+        ".b.com\tTRUE\t/\tFALSE\t0\tsess\tdef\n"
+        f".c.com\tTRUE\t/\tFALSE\t{past_expiry}\told\tghi\n"
+    ).encode()
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings/cookies",
+            files={"cookies": ("cookies.txt", data, "text/plain")},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert (
+            "2+cookies+for+2+domains" in location
+            or "2%20cookies%20for%202%20domains" in location
+        )
+
+
 def test_cookies_upload_pasted_text_works():
     text = _netscape_cookies_text()
     with TestClient(app) as c:

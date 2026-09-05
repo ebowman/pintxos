@@ -16,7 +16,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from pintxos import adfilter
 from pintxos.config import get_setting, is_truthy
-from pintxos.cookies import get_jar
+from pintxos.cookies import get_jar, has_cookies_for
 from pintxos.db import db, now
 from pintxos.stats import word_count
 from pintxos.summarize import MissingApiKey, SummarizeError, summarize
@@ -229,10 +229,17 @@ def poll_feed(feed_id: int) -> bool:
         total = len(kept)
         for i, (guid, link, entry) in enumerate(kept, 1):
             original_title = entry.get("title", "")
+            jar = get_jar()
+            had = bool(link) and jar is not None and has_cookies_for(jar, link)
             text = fetch_article(link) if link else None
             # Word count only when we actually read the article, on the full extracted
             # text (before summarize() truncates it); fallback items stay NULL.
             words = word_count(text) if text is not None else None
+            auth = (
+                None
+                if (text is not None and not had)
+                else ("used" if text is not None else ("failed" if had else "missing"))
+            )
             fallback = 0
             if text is None:
                 fallback = 1
@@ -255,11 +262,11 @@ def poll_feed(feed_id: int) -> bool:
             with db() as conn:  # commit per item: a crash keeps what we already paid for
                 conn.execute(
                     "INSERT OR IGNORE INTO items(feed_id, guid, link, original_title, "
-                    "published_at, headline, summary, fallback, word_count, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "published_at, headline, summary, fallback, word_count, auth, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         feed_id, guid, link or "", original_title, _published_at(entry),
-                        headline, summary, fallback, words, now(),
+                        headline, summary, fallback, words, auth, now(),
                     ),
                 )
 

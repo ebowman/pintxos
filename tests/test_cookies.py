@@ -18,7 +18,7 @@ import os
 import pytest
 
 import pintxos.cookies as cookies_mod
-from pintxos.cookies import cookie_path, get_jar, load_jar, summary
+from pintxos.cookies import cookie_path, get_jar, has_cookies_for, load_jar, summary
 
 # Well into the future so cookies are never seen as expired.
 FUTURE_EXPIRY = 4102444800  # 2100-01-01T00:00:00Z
@@ -134,3 +134,40 @@ def test_expired_cookie_dropped_session_cookie_kept():
 
     result = summary(jar)
     assert result == [{"domain": ".ft.com", "count": 1, "expires": None}]
+
+
+def test_has_cookies_for_leading_dot_domain_matches_subdomain_and_bare():
+    path = cookie_path()
+    _write(path, [f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+    jar = get_jar()
+
+    assert has_cookies_for(jar, "https://www.ft.com/a") is True
+    assert has_cookies_for(jar, "https://ft.com/a") is True
+    assert has_cookies_for(jar, "https://www.example.com/a") is False
+    assert has_cookies_for(jar, "https://notft.com/a") is False
+
+
+def test_has_cookies_for_host_only_cookie_matches_only_that_host():
+    path = cookie_path()
+    _write(path, [f"www.economist.com\tFALSE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+    jar = get_jar()
+
+    assert has_cookies_for(jar, "https://www.economist.com/a") is True
+    assert has_cookies_for(jar, "https://economist.com/a") is False
+
+
+def test_has_cookies_for_none_or_empty_jar_is_false():
+    assert has_cookies_for(None, "https://www.ft.com/a") is False
+
+    path = cookie_path()
+    path.write_text("# Netscape HTTP Cookie File\n")
+    jar = get_jar()
+    assert has_cookies_for(jar, "https://www.ft.com/a") is False
+
+
+def test_has_cookies_for_url_without_host_is_false():
+    path = cookie_path()
+    _write(path, [f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+    jar = get_jar()
+
+    assert has_cookies_for(jar, "not-a-url") is False

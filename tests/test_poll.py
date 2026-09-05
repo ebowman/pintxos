@@ -721,6 +721,42 @@ def test_get_clears_client_cookies_when_file_removed(_reset_client_jar, monkeypa
     assert len(poll._client.cookies) == 0
 
 
+def test_auth_null_when_no_cookies_and_fetch_succeeds(feed_id, calls, monkeypatch, _reset_client_jar):
+    monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL TEXT " * 30)
+    poll.poll_all()
+    rows = items()
+    assert len(rows) == 3
+    assert all(row["auth"] is None for row in rows)
+    assert all(row["fallback"] == 0 for row in rows)
+
+
+def test_auth_used_when_cookies_present_and_fetch_succeeds(feed_id, calls, monkeypatch, _reset_client_jar):
+    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+    monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL TEXT " * 30)
+    poll.poll_all()
+    rows = items()
+    assert len(rows) == 3
+    assert all(row["auth"] == "used" for row in rows)
+    assert all(row["fallback"] == 0 for row in rows)
+
+
+def test_auth_failed_when_cookies_present_and_fetch_fails(feed_id, calls, _reset_client_jar):
+    _write_cookies([f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc"])
+    poll.poll_all()
+    rows = items()
+    assert len(rows) == 3
+    assert all(row["auth"] == "failed" for row in rows)
+    assert all(row["fallback"] == 1 for row in rows)
+
+
+def test_auth_missing_when_no_cookies_and_fetch_fails(feed_id, calls, _reset_client_jar):
+    poll.poll_all()
+    rows = items()
+    assert len(rows) == 3
+    assert all(row["auth"] == "missing" for row in rows)
+    assert all(row["fallback"] == 1 for row in rows)
+
+
 def test_cookies_only_sent_to_matching_domain():
     _write_cookies([f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc123"])
     jar = poll.get_jar()

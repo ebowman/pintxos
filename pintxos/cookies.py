@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import http.cookiejar
 import logging
+import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pintxos.config import data_dir
 
@@ -103,3 +106,26 @@ def summary(jar: http.cookiejar.MozillaCookieJar | None) -> list[dict]:
         )
         result.append({"domain": domain, "count": counts[domain], "expires": expires})
     return result
+
+
+def has_cookies_for(jar: http.cookiejar.MozillaCookieJar | None, url: str) -> bool:
+    """Whether `jar` holds at least one cookie that would be sent with a request to `url`.
+
+    Delegates to the jar's own request-matching (`_cookies_for_request`), built on
+    `http.cookiejar.Request` from `url` via `urllib.request.Request`. This is the same
+    matching http.cookiejar (and therefore httpx's jar wrapper) uses to decide which
+    cookies to send, so the answer here agrees with what the actual request will carry:
+    a `.ft.com` cookie matches `www.ft.com` and `ft.com`, a host-only `www.ft.com` cookie
+    matches only that host, and nothing matches an unrelated domain. `_cookies_for_request`
+    is a private method but has been stable across CPython versions. It relies on
+    `policy._now`/`jar._now` being set (normally done by `add_cookie_header` before it
+    calls this), used to decide whether a cookie has expired -- so we set them here too,
+    matching `add_cookie_header`'s own `self._policy._now = self._now = int(time.time())`.
+    """
+    if jar is None:
+        return False
+    if not urlparse(url).hostname:
+        return False
+    req = urllib.request.Request(url)
+    jar._policy._now = jar._now = int(time.time())
+    return bool(jar._cookies_for_request(req))

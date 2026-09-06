@@ -1406,12 +1406,12 @@ def test_retry_fallback_updates_row_in_place_on_success_or_records_auth_on_failu
     feed_id = _seed_feed(_SINGLE_FALLBACK)
 
     if fetch_ok:
-        monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL ARTICLE TEXT " * 20)
+        monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
         monkeypatch.setattr(
             poll, "summarize", lambda text, original_title, url: ("New Headline", "New summary")
         )
     else:
-        monkeypatch.setattr(poll, "fetch_article", lambda link: None)
+        monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
 
         def boom_summarize(*_args, **_kwargs):
             raise AssertionError("summarize should not be called when the fetch fails")
@@ -1436,7 +1436,7 @@ def test_retry_fallback_error_paths(monkeypatch, error):
     the loop immediately (later rows untouched, last_error set); SummarizeError
     just skips that row (fallback=1 kept) and the loop continues to the next one."""
     feed_id = _seed_feed([("guid-1", 1, None), ("guid-2", 1, None)])
-    monkeypatch.setattr(poll, "fetch_article", lambda link: "FULL ARTICLE TEXT " * 20)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
 
     from pintxos.summarize import MissingApiKey, SummarizeError
 

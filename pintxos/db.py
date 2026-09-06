@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS items (
     fallback INTEGER DEFAULT 0,
     word_count INTEGER,
     auth TEXT,
+    fetch_status TEXT,
     created_at TEXT,
     UNIQUE(feed_id, guid)
 );
@@ -78,6 +79,9 @@ def connect() -> sqlite3.Connection:
         # NULL = article was not fetched (fallback), so no stats.
         ("word_count", "INTEGER"),
         ("auth", "TEXT"),
+        # Why the article ended up as it did: ok / teaser / blocked / error.
+        # NULL = written before this column existed; callers treat it as "error".
+        ("fetch_status", "TEXT"),
     ):
         if name not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")

@@ -149,10 +149,14 @@ def test_items_has_word_count_column(db):
     assert "word_count" in {r["name"] for r in db.execute("PRAGMA table_info(items)")}
 
 
+def test_items_has_fetch_status_column(db):
+    assert "fetch_status" in {r["name"] for r in db.execute("PRAGMA table_info(items)")}
+
+
 def test_connect_migrates_existing_db_missing_items_word_count_and_auth_columns(
     tmp_path, monkeypatch
 ):
-    """A DB created before word_count/auth existed gains both columns on connect(), twice."""
+    """A DB from before word_count/auth/fetch_status gains all three on connect(), twice."""
     monkeypatch.setenv("PINTXOS_DATA_DIR", str(tmp_path))
     old_conn = sqlite3.connect(db_path())
     old_conn.executescript(
@@ -190,6 +194,8 @@ def test_connect_migrates_existing_db_missing_items_word_count_and_auth_columns(
         assert "word_count" in cols
         assert cols.count("auth") == 1
         assert "auth" in cols
+        assert cols.count("fetch_status") == 1
+        assert "fetch_status" in cols
     finally:
         conn.close()
 
@@ -199,11 +205,13 @@ def test_connect_migrates_existing_db_missing_items_word_count_and_auth_columns(
         cols2 = [r["name"] for r in conn2.execute("PRAGMA table_info(items)")]
         assert cols2.count("word_count") == 1
         assert cols2.count("auth") == 1
+        assert cols2.count("fetch_status") == 1
 
         feed_id = add_feed(conn2)
         item_id = add_item(conn2, feed_id)
         row = conn2.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
         assert row["word_count"] is None  # not fetched/summarized -> no stats yet
         assert row["auth"] is None
+        assert row["fetch_status"] is None  # pre-existing rows stay NULL
     finally:
         conn2.close()

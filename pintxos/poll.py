@@ -69,22 +69,32 @@ def _get(url: str) -> curl_cffi.requests.Response:
     return _client.get(url)
 
 
-def fetch_article(link: str) -> str | None:
-    """Full article text, or None if the page can't be fetched or is too thin."""
+def fetch_article(link: str) -> tuple[str | None, str]:
+    """Full article text and why: (text, "ok"), or (None, reason) when it can't be read.
+
+    The reason is "blocked" for HTTP 401, 403 or 429 (a paywall or a bot block),
+    "teaser" when a 2xx HTML page yields less than MIN_ARTICLE_CHARS of extracted
+    text, and "error" for everything else: a failed request, any other non-2xx
+    status, or a non-HTML content type.
+    """
+    status = "error"
     try:
         resp = _get(link)
         if resp.status_code // 100 != 2:
+            if resp.status_code in (401, 403, 429):
+                status = "blocked"
             raise ValueError(f"HTTP {resp.status_code}")
         if "html" not in resp.headers.get("content-type", "").lower():
             raise ValueError(f"content-type {resp.headers.get('content-type')!r}")
         text = trafilatura.extract(resp.text, include_comments=False, include_tables=False)
         if not text or len(text) < MIN_ARTICLE_CHARS:
+            status = "teaser"
             raise ValueError(f"extracted {len(text or '')} chars")
     except Exception as e:
         log.info("article fetch failed, using feed content: %s (%s)", link, e)
-        return None
+        return None, status
     log.info("fetched article %s", link)
-    return text
+    return text, "ok"
 
 
 def _strip_html(html: str) -> str:
@@ -162,10 +172,13 @@ def _keep_patterns(conn) -> list[re.Pattern]:
 
 def _fetch_and_auth(
     link: str, jar: MozillaCookieJar | None
-) -> tuple[str | None, str | None, int | None]:
-    """Fetch `link`'s article text and work out (text, auth, word_count) for it."""
+) -> tuple[str | None, str | None, int | None, str]:
+    """Fetch `link` and work out (text, auth, word_count, fetch_status) for it.
+
+    An entry with no link is never fetched at all, which counts as "error".
+    """
     had = bool(link) and jar is not None and has_cookies_for(jar, link)
-    text = fetch_article(link) if link else None
+    text, fetch_status = fetch_article(link) if link else (None, "error")
     words = word_count(text) if text is not None else None
     auth = None
     if text is None:
@@ -176,7 +189,7 @@ def _fetch_and_auth(
         # them in memory (Set-Cookie on the response). Persist the jar so a restart
         # doesn't replay the stale, possibly-invalidated tokens.
         save_jar(jar)
-    return text, auth, words
+    return text, auth, words, fetch_status
 
 
 def _set_error(feed_id: int, message: str, polled: bool = True) -> None:
@@ -262,7 +275,7 @@ def poll_feed(feed_id: int) -> bool:
             original_title = entry.get("title", "")
             # Word count only when we actually read the article, on the full extracted
             # text (before summarize() truncates it); fallback items stay NULL.
-            text, auth, words = _fetch_and_auth(link, jar)
+            text, auth, words, fetch_status = _fetch_and_auth(link, jar)
             fallback = 0
             if text is None:
                 fallback = 1
@@ -285,11 +298,12 @@ def poll_feed(feed_id: int) -> bool:
             with db() as conn:  # commit per item: a crash keeps what we already paid for
                 conn.execute(
                     "INSERT OR IGNORE INTO items(feed_id, guid, link, original_title, "
-                    "published_at, headline, summary, fallback, word_count, auth, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "published_at, headline, summary, fallback, word_count, auth, "
+                    "fetch_status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         feed_id, guid, link or "", original_title, _published_at(entry),
-                        headline, summary, fallback, words, auth, now(),
+                        headline, summary, fallback, words, auth, fetch_status, now(),
                     ),
                 )
 
@@ -324,10 +338,13 @@ def retry_fallback(feed_id: int) -> None:
         for i, row in enumerate(rows, 1):
             item_id, link, original_title = row["id"], row["link"], row["original_title"]
             _status[feed_id] = f"Retrying {i}/{total}"
-            text, auth, words = _fetch_and_auth(link, jar)
+            text, auth, words, fetch_status = _fetch_and_auth(link, jar)
             if text is None:
                 with db() as conn:
-                    conn.execute("UPDATE items SET auth = ? WHERE id = ?", (auth, item_id))
+                    conn.execute(
+                        "UPDATE items SET auth = ?, fetch_status = ? WHERE id = ?",
+                        (auth, fetch_status, item_id),
+                    )
                 continue
 
             try:
@@ -344,8 +361,8 @@ def retry_fallback(feed_id: int) -> None:
                 # a row pruned meanwhile is a harmless no-op
                 conn.execute(
                     "UPDATE items SET headline = ?, summary = ?, fallback = 0, auth = ?, "
-                    "word_count = ? WHERE id = ?",
-                    (headline, summary, auth, words, item_id),
+                    "word_count = ?, fetch_status = ? WHERE id = ?",
+                    (headline, summary, auth, words, fetch_status, item_id),
                 )
     finally:
         _status.pop(feed_id, None)

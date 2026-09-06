@@ -54,15 +54,23 @@
   <button type="submit" class="btn-primary">Save</button>
 </form>
 
-<h2>Subscription cookies</h2>
-<p>Pintxøs sends these cookies only to their own sites when it fetches an article, so paywalled feeds you subscribe to are summarized from the full story. Loaded from <code>{{ cookie_file }}</code>.</p>
+<h2>Accessing Pay-Walled Content</h2>
+<p>If a feed only carries a short teaser and the article itself is behind a paywall, Pintxøs cannot read the full text. For sites you subscribe to, you can give Pintxøs your own login: log in to the site in your browser, then hand Pintxøs the login cookie. Each site's cookie is only ever sent back to that same site.</p>
+<ol>
+  <li>Install the free, open-source <a href="https://cookie-editor.com" target="_blank" rel="noopener">Cookie-Editor</a> browser extension (Safari, Chrome, Firefox).</li>
+  <li>Open the website you want full articles from and log in.</li>
+  <li>Click the Cookie-Editor icon, choose <b>Export</b>, then <b>Netscape</b>. The cookies are now on your clipboard.</li>
+  <li>Paste them at the end of the box below and click <b>Save</b>. Repeat for each site.</li>
+</ol>
+<p class="muted">Pintxøs uses the new cookies on the next poll. On a feed's page, "Retry fallback items" re-reads articles that were stored as teasers. When the Feeds page shows "login failed", log in again and repeat the steps: cookies expire.</p>
 {% if not cookie_domains %}
 {% if cookie_file_exists %}
-<p class="muted">cookies.txt is present but contains no usable cookies (all expired?).</p>
+<p class="muted">The saved cookies have all expired. Log in again and repeat the steps above.</p>
 {% else %}
-<p class="muted">No cookies.txt found.</p>
+<p class="muted">No login saved yet.</p>
 {% endif %}
 {% else %}
+<p class="muted">Sites with a saved login:</p>
 {% for entry in cookie_domains %}
 <div class="muted">{{ entry.domain }} — {{ entry.count }} cookie{{ "s" if entry.count != 1 else "" }}, earliest expiry {{ entry.expires or "session" }}{% if entry.expires and entry.expires <= cookie_soon %} (expires soon){% endif %}</div>
 {% endfor %}
@@ -70,15 +78,15 @@
 
 <form method="post" action="/settings/cookies" enctype="multipart/form-data">
   <div class="field">
-    <label for="cookies">cookies.txt file</label>
-    <input type="file" id="cookies" name="cookies">
+    <label for="cookies_text">Saved cookies</label>
+    <textarea id="cookies_text" name="cookies_text" rows="12" class="mono">{{ cookies_text }}</textarea>
+    <div class="muted">Shown in plain text: anyone who can open this page can read these cookies. Clear the box and save to remove them.</div>
   </div>
   <div class="field">
-    <label for="cookies_text">cookies.txt contents</label>
-    <textarea id="cookies_text" name="cookies_text" rows="12" class="mono">{{ cookies_text }}</textarea>
-    <div class="muted">Shown in plain text: anyone who can open this page can read these cookies.</div>
+    <label for="cookies">…or upload a cookies.txt file</label>
+    <input type="file" id="cookies" name="cookies">
+    <div class="muted">Stored as <code>{{ cookie_file }}</code>.</div>
   </div>
-  <p class="muted">Export with the Cookie-Editor browser extension (Export &rarr; Netscape) while logged in; Chrome/Firefox users can also use a "Get cookies.txt LOCALLY" extension.</p>
   <button type="submit" class="btn-primary">Save</button>
 </form>
 {% endblock %}

@@ -180,24 +180,25 @@ The ad filter toggle and extra patterns can also be changed on the Settings page
 
 ## Paywalled feeds
 
-For sites you subscribe to, Pintxøs can fetch the full article using your
-own logged-in browser cookies instead of falling back to the feed's
-summary; each site's cookies are only ever sent to that same site.
+If a feed only carries a short teaser and the article itself is behind a
+paywall, Pintxøs cannot read the full text. For sites you subscribe to,
+you can give Pintxøs your own login: log in to the site in your browser,
+then hand Pintxøs the login cookie. Each site's cookie is only ever sent
+back to that same site.
 
-To get a cookies file, install the
-[Cookie-Editor](https://cookie-editor.com) browser extension (Safari,
-Chrome, Firefox), open the site while logged in, and use Export →
-Netscape — "Netscape" is just the name of the plain-text format. Paste the
-exported text into the "Subscription cookies" box on the Settings page, or
-upload it as a file there, or copy it to `<PINTXOS_DATA_DIR>/cookies.txt`
-by hand.
+1. Install the free, open-source [Cookie-Editor](https://cookie-editor.com)
+   browser extension (Safari, Chrome, Firefox).
+2. Open the website you want full articles from and log in.
+3. Click the Cookie-Editor icon, choose **Export**, then **Netscape**. The
+   cookies are now on your clipboard.
+4. Paste them at the end of the box on the Settings page and click
+   **Save**. Repeat for each site. You can also upload a cookies.txt file
+   there, or copy it to `<PINTXOS_DATA_DIR>/cookies.txt` by hand.
 
-Cookies are picked up on the next poll, no restart needed. Use the "Retry
-N fallback items" button on the feed's page to re-summarize items already
-stored as teasers (one summary call each). The Feeds page shows "via
-login", "need login" and "login failed" counts per feed; once items start
-showing "login failed", export a fresh cookies file (Settings shows the
-earliest expiry).
+Pintxøs uses the new cookies on the next poll. On a feed's page, "Retry
+fallback items" re-reads articles that were stored as teasers. When the
+Feeds page shows "login failed", log in again and repeat the steps
+above: cookies expire.
 
 Fetches impersonate a real browser (`PINTXOS_IMPERSONATE`, default
 `safari17_0`), because these sites reject plain HTTP clients before ever

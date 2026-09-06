@@ -973,8 +973,15 @@ def test_settings_page_no_cookies_file_shows_placeholder():
     with TestClient(app) as c:
         page = c.get("/settings").text
 
-    assert "No cookies.txt found." in page
+    assert "No login saved yet." in page
     assert _cookies_textarea_content(page) == ""
+
+
+def test_settings_page_links_cookie_editor():
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert 'href="https://cookie-editor.com"' in page
 
 
 def test_settings_page_lists_cookie_domains_expiry_and_expiring_soon():
@@ -1001,7 +1008,7 @@ def test_settings_expired_cookies_have_no_remove_button_and_empty_save_clears_th
     write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{past_expiry}\tsid\tabc\n")
     with TestClient(app) as c:
         page = c.get("/settings").text
-        assert "no usable cookies" in page
+        assert "all expired" in page
         assert 'action="/settings/cookies/delete"' not in page
 
         resp = c.post(
@@ -1015,7 +1022,7 @@ def test_settings_expired_cookies_have_no_remove_button_and_empty_save_clears_th
 
         page = c.get("/settings").text
 
-    assert "No cookies.txt found." in page
+    assert "No login saved yet." in page
 
 
 def test_settings_cookies_section_is_outside_the_settings_form():
@@ -1025,7 +1032,7 @@ def test_settings_cookies_section_is_outside_the_settings_form():
 
     form_start = page.index('action="/settings"')
     form_close = page.index("</form>", form_start)
-    cookies_heading = page.index("Subscription cookies")
+    cookies_heading = page.index("Accessing Pay-Walled Content")
     assert form_close < cookies_heading
 
 
@@ -1143,7 +1150,7 @@ def test_cookies_empty_save_removes_existing_file():
         page = c.get("/settings").text
 
     assert not cookie_path().exists()
-    assert "No cookies.txt found." in page
+    assert "No login saved yet." in page
 
 
 def test_settings_page_textarea_shows_current_cookies():

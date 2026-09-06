@@ -16,7 +16,7 @@ dependencies = [
     "python-multipart",
     "feedparser",
     "trafilatura",
-    "curl_cffi",
+    "curl_cffi>=0.16",
     "apscheduler",
     "anthropic",
     "python-dotenv",

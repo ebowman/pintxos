@@ -444,6 +444,34 @@ def test_retry_fallback_records_fetch_status_on_repeat_failure(feed_id, monkeypa
     assert rows[0]["headline"] == "old headline"
 
 
+def test_retry_fallback_updates_fetch_status_when_summarize_fails(feed_id, monkeypatch):
+    """A fetch that succeeds but fails to summarize must not keep a stale fetch_status."""
+    item_id = _seed_fallback_item(feed_id)
+    second_id = _seed_fallback_item(feed_id, guid="guid-2", link="https://example.com/two")
+    with db() as conn:
+        conn.execute(
+            "UPDATE items SET fetch_status = ?, auth = ? WHERE id IN (?, ?)",
+            ("blocked", "missing", item_id, second_id),
+        )
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+
+    def boom_summarize(*_args, **_kwargs):
+        raise SummarizeError("boom")
+
+    monkeypatch.setattr(poll, "summarize", boom_summarize)
+
+    poll.retry_fallback(feed_id)
+
+    rows = {row["id"]: row for row in items()}
+    assert set(rows) == {item_id, second_id}  # both still there, never deleted
+    for row in rows.values():
+        assert row["fetch_status"] == "ok"  # refreshed, not left at the stale "blocked"
+        assert row["fallback"] == 1  # left for a later retry
+        assert row["headline"] == "old headline"  # untouched: summarize never returned
+        assert row["summary"] == "old summary"
+    # a SummarizeError on the first item must not abort the loop before the second runs
+
+
 def test_ui_can_write_while_polling(feed_id, calls, monkeypatch):
     """A second writer (the web UI) must not hit 'database is locked' mid-poll."""
     import sqlite3

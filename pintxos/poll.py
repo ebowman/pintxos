@@ -355,6 +355,15 @@ def retry_fallback(feed_id: int) -> None:
                 return
             except SummarizeError as e:
                 log.warning("summarize failed for %s: %s", link, e)
+                with db() as conn:
+                    # fetch succeeded even though summarize didn't: record the fresh
+                    # auth/fetch_status so the UI doesn't report a stale status, but
+                    # leave fallback = 1, headline, and summary untouched so a later
+                    # retry still picks this item up.
+                    conn.execute(
+                        "UPDATE items SET auth = ?, fetch_status = ? WHERE id = ?",
+                        (auth, fetch_status, item_id),
+                    )
                 continue  # left as a fallback item; a later retry can try again
 
             with db() as conn:  # commit per item: a crash keeps what we already paid for

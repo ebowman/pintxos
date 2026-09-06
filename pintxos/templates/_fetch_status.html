@@ -1,0 +1,7 @@
+{#- Renders the per-feed fetch-status summary produced by pintxos.fetch_status.summarize.
+    Variable: fetch_status (a list of {text, tooltip, link, ok} dicts). Used by the feeds
+    table Status cell and the feed page in place of the hand-written login sentences. -#}
+{%- for entry in fetch_status -%}
+{%- if not loop.first %} · {% endif -%}
+<span class="info{% if entry.ok %} muted{% endif %}" title="{{ entry.tooltip }}">{{ entry.text }} <span class="info-icon">ℹ️</span></span>{% if entry.link %} <a href="{{ entry.link.href }}">{{ entry.link.label }}</a>{% endif -%}
+{%- endfor -%}

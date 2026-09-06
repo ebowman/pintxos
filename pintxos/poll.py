@@ -17,7 +17,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from pintxos import adfilter
 from pintxos.config import DEFAULTS, get_setting, is_truthy
-from pintxos.cookies import get_jar, has_cookies_for
+from pintxos.cookies import get_jar, has_cookies_for, save_jar
 from pintxos.db import db, now
 from pintxos.stats import word_count
 from pintxos.summarize import MissingApiKey, SummarizeError, summarize
@@ -172,6 +172,10 @@ def _fetch_and_auth(
         auth = "failed" if had else "missing"
     elif had:
         auth = "used"
+        # Cookies were sent and the fetch succeeded: curl_cffi may have rotated some of
+        # them in memory (Set-Cookie on the response). Persist the jar so a restart
+        # doesn't replay the stale, possibly-invalidated tokens.
+        save_jar(jar)
     return text, auth, words
 
 

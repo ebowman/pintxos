@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import http.cookiejar
 import logging
+import os
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -68,6 +70,39 @@ def get_jar() -> http.cookiejar.MozillaCookieJar | None:
     jar = load_jar()
     _cache = (key, jar)
     return jar
+
+
+def save_jar(jar: http.cookiejar.MozillaCookieJar, path: Path | None = None) -> bool:
+    """Write `jar` back to `path` (default cookie_path()) atomically. Never raises.
+
+    # ponytail: save after every authenticated fetch; ceiling is one small write per
+    # article.
+    """
+    global _cache
+
+    if path is None:
+        path = cookie_path()
+
+    tmp_path: Path | None = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(dir=path.parent, delete=False)  # 0600 by default
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        # MozillaCookieJar.save writes session cookies (expires None) with an empty
+        # expiry field; load_jar() reads that back as a session cookie, so no special
+        # handling is needed here.
+        jar.save(str(tmp_path), ignore_discard=True, ignore_expires=True)
+        os.replace(tmp_path, path)  # os.replace keeps the tmp file's 0600 mode
+    except OSError as e:
+        log.warning("could not save cookies.txt to %s: %s", path, e)
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        return False
+
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    _cache = (key, jar)
+    return True
 
 
 def summary(jar: http.cookiejar.MozillaCookieJar | None) -> list[dict]:

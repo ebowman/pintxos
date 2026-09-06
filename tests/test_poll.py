@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import threading
 import time
@@ -766,3 +767,61 @@ def test_auth_outcome_from_cookies_presence_and_fetch_result(
     assert len(rows) == 3
     assert all(row["auth"] == expected_auth for row in rows)
     assert all(row["fallback"] == expected_fallback for row in rows)
+
+
+# --- persisting rotated cookies back to cookies.txt -------------------------------
+
+
+def test_authenticated_fetch_persists_rotated_cookie_to_disk(feed_id, calls, monkeypatch):
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+
+    def fake_fetch_article(link):
+        # Simulate curl_cffi rotating the session cookie in memory on a successful,
+        # authenticated fetch.
+        jar = poll.get_jar()
+        rotated = http.cookiejar.Cookie(
+            version=0,
+            name="sid",
+            value="rotated-value",
+            port=None,
+            port_specified=False,
+            domain=".example.com",
+            domain_specified=True,
+            domain_initial_dot=True,
+            path="/",
+            path_specified=True,
+            secure=False,
+            expires=FUTURE_EXPIRY,
+            discard=False,
+            comment=None,
+            comment_url=None,
+            rest={},
+        )
+        jar.set_cookie(rotated)
+        return "FULL ARTICLE TEXT " * 30
+
+    monkeypatch.setattr(poll, "fetch_article", fake_fetch_article)
+
+    poll.poll_all()
+
+    rows = items()
+    assert len(rows) == 3
+    assert all(row["auth"] == "used" for row in rows)
+    assert "rotated-value" in cookie_path().read_text()
+
+
+def test_failed_authenticated_fetch_does_not_rewrite_cookies_file(feed_id, calls):
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+    # `calls` fixture leaves poll.fetch_article returning None, so every fetch fails
+    # even though cookies are present for the article domain (auth == "failed").
+
+    before_mtime_ns = cookie_path().stat().st_mtime_ns
+    before_content = cookie_path().read_text()
+
+    poll.poll_all()
+
+    rows = items()
+    assert len(rows) == 3
+    assert all(row["auth"] == "failed" for row in rows)
+    assert cookie_path().stat().st_mtime_ns == before_mtime_ns
+    assert cookie_path().read_text() == before_content

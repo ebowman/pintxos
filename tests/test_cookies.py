@@ -13,12 +13,22 @@ even if paths were ever to collide).
 
 from __future__ import annotations
 
+import http.cookiejar
 import os
+import stat
 
 import pytest
 
 import pintxos.cookies as cookies_mod
-from pintxos.cookies import cookie_path, expiry_for, get_jar, has_cookies_for, load_jar, summary
+from pintxos.cookies import (
+    cookie_path,
+    expiry_for,
+    get_jar,
+    has_cookies_for,
+    load_jar,
+    save_jar,
+    summary,
+)
 from conftest import FUTURE_EXPIRY, write_cookies
 
 PAST_EXPIRY = 946684800  # 2000-01-01T00:00:00Z, well in the past
@@ -157,6 +167,57 @@ def test_has_cookies_for_none_or_empty_jar_is_false():
     write_cookies("")
     jar = get_jar()
     assert has_cookies_for(jar, "https://www.ft.com/a") is False
+
+
+def test_save_jar_persists_rotated_cookie_and_refreshes_cache():
+    write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
+
+    jar = get_jar()
+    assert jar is not None
+
+    rotated = http.cookiejar.Cookie(
+        version=0,
+        name="sid",
+        value="rotated-value",
+        port=None,
+        port_specified=False,
+        domain=".ft.com",
+        domain_specified=True,
+        domain_initial_dot=True,
+        path="/",
+        path_specified=True,
+        secure=False,
+        expires=FUTURE_EXPIRY,
+        discard=False,
+        comment=None,
+        comment_url=None,
+        rest={},
+    )
+    jar.set_cookie(rotated)
+
+    assert save_jar(jar) is True
+
+    path = cookie_path()
+    assert "rotated-value" in path.read_text()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    # The module cache was refreshed in place: get_jar() returns the SAME object,
+    # not a fresh reload from disk.
+    assert get_jar() is jar
+
+    reloaded = load_jar()
+    assert reloaded is not None
+    assert reloaded._cookies[".ft.com"]["/"]["sid"].value == "rotated-value"
+
+
+def test_save_jar_missing_parent_dir_returns_false_without_raising(tmp_path):
+    write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
+    jar = get_jar()
+    assert jar is not None
+
+    bad_path = tmp_path / "does-not-exist" / "cookies.txt"
+    assert save_jar(jar, bad_path) is False
+    assert not bad_path.exists()
 
 
 def test_expiry_for_prefers_most_specific_matching_domain():

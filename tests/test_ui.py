@@ -15,7 +15,7 @@ import pintxos.app as app_module
 from pintxos import poll
 from pintxos.app import app
 from pintxos.config import data_dir, get_setting
-from pintxos.cookies import cookie_path
+from pintxos.cookies import cookie_path, load_jar
 from pintxos.db import db, now as db_now
 
 from conftest import FUTURE_EXPIRY, write_cookies
@@ -962,12 +962,19 @@ def test_feed_edit_page_malformed_last_filtered_does_not_500(monkeypatch):
     assert "Nothing filtered at last poll" in resp.text
 
 
+def _cookies_textarea_content(page: str) -> str:
+    start = page.index('id="cookies_text"')
+    open_end = page.index(">", start) + 1
+    close = page.index("</textarea>", open_end)
+    return page[open_end:close]
+
+
 def test_settings_page_no_cookies_file_shows_placeholder():
     with TestClient(app) as c:
         page = c.get("/settings").text
 
     assert "No cookies.txt found." in page
-    assert 'action="/settings/cookies/delete"' not in page
+    assert _cookies_textarea_content(page) == ""
 
 
 def test_settings_page_lists_cookie_domains_expiry_and_expiring_soon():
@@ -989,16 +996,20 @@ def test_settings_page_lists_cookie_domains_expiry_and_expiring_soon():
     assert "expires soon" in page  # only .economist.com's near-term expiry trips this
 
 
-def test_settings_expired_cookies_show_remove_button_and_delete_clears_them():
+def test_settings_expired_cookies_have_no_remove_button_and_empty_save_clears_them():
     past_expiry = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
     write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{past_expiry}\tsid\tabc\n")
     with TestClient(app) as c:
         page = c.get("/settings").text
         assert "no usable cookies" in page
-        assert 'action="/settings/cookies/delete"' in page
+        assert 'action="/settings/cookies/delete"' not in page
 
-        resp = c.post("/settings/cookies/delete", follow_redirects=False)
+        resp = c.post(
+            "/settings/cookies", data={"cookies_text": ""}, follow_redirects=False
+        )
         assert resp.status_code in (302, 303, 307, 308)
+        location = resp.headers["location"]
+        assert "Cookies+removed" in location or "Cookies%20removed" in location
 
         assert not (data_dir() / "cookies.txt").exists()
 
@@ -1075,9 +1086,8 @@ def test_cookies_upload_pasted_text_works_and_flash_count_reflects_load_jar_rule
     [
         b'{"not": "cookies"}',
         b"\xff\xfe\x00garbage",
-        b"",
     ],
-    ids=["garbage-json", "non-utf8", "empty"],
+    ids=["garbage-json", "non-utf8"],
 )
 def test_cookies_upload_bad_payload_rejected_and_existing_kept(payload):
     valid = _netscape_cookies_text().encode()
@@ -1107,32 +1117,36 @@ def test_cookies_upload_bad_payload_rejected_and_existing_kept(payload):
     assert leftover == []
 
 
-def test_cookies_upload_nothing_rejected():
+def test_cookies_empty_post_with_no_existing_file_redirects_removed():
     with TestClient(app) as c:
         resp = c.post("/settings/cookies", data={}, follow_redirects=False)
         assert resp.status_code == 303
-        assert "err=" in resp.headers["location"]
-        assert "Nothing" in resp.headers["location"] or "err=Nothing" in resp.headers["location"]
+        location = resp.headers["location"]
+        assert "err=" not in location
+        assert "Cookies+removed" in location or "Cookies%20removed" in location
 
     assert not cookie_path().exists()
 
 
-def test_cookies_delete_removes_file():
+def test_cookies_empty_save_removes_existing_file():
     text = _netscape_cookies_text()
     with TestClient(app) as c:
         c.post("/settings/cookies", data={"cookies_text": text}, follow_redirects=False)
 
-        resp = c.post("/settings/cookies/delete", follow_redirects=False)
+        resp = c.post(
+            "/settings/cookies", data={"cookies_text": ""}, follow_redirects=False
+        )
         assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "Cookies+removed" in location or "Cookies%20removed" in location
 
         page = c.get("/settings").text
 
     assert not cookie_path().exists()
     assert "No cookies.txt found." in page
-    assert "Remove" not in page
 
 
-def test_cookies_upload_never_echoes_value():
+def test_settings_page_textarea_shows_current_cookies():
     text = _netscape_cookies_text()
     with TestClient(app) as c:
         resp = c.post(
@@ -1141,17 +1155,24 @@ def test_cookies_upload_never_echoes_value():
         assert "UPLOADSECRET42" not in resp.headers["location"]
 
         page = c.get("/settings").text
-        assert "UPLOADSECRET42" not in page
 
-        resp2 = c.post(
-            "/settings/cookies",
-            files={"cookies": ("cookies.txt", text.encode(), "text/plain")},
-            follow_redirects=False,
-        )
-        assert "UPLOADSECRET42" not in resp2.headers["location"]
+    assert "UPLOADSECRET42" in _cookies_textarea_content(page)
 
-        page2 = c.get("/settings").text
-        assert "UPLOADSECRET42" not in page2
+
+def test_settings_page_escapes_cookie_text():
+    # Not valid Netscape-format lines, so load_jar() fails to parse it (returns
+    # None); the raw text must still be shown, HTML-escaped, in the textarea.
+    text = "# Netscape HTTP Cookie File\nnot a valid cookie line <b>&\n"
+    (data_dir() / "cookies.txt").write_text(text)
+    assert load_jar() is None
+
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert "&lt;b&gt;&amp;" in page
+    textarea_content = _cookies_textarea_content(page)
+    assert "&lt;b&gt;&amp;" in textarea_content
+    assert "<b>&" not in textarea_content
 
 
 def _insert_item(

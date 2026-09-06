@@ -74,15 +74,11 @@
     <input type="file" id="cookies" name="cookies">
   </div>
   <div class="field">
-    <label for="cookies_text">…or paste the exported text</label>
-    <textarea id="cookies_text" name="cookies_text" rows="4" class="mono"></textarea>
+    <label for="cookies_text">cookies.txt contents</label>
+    <textarea id="cookies_text" name="cookies_text" rows="12" class="mono">{{ cookies_text }}</textarea>
+    <div class="muted">Shown in plain text: anyone who can open this page can read these cookies.</div>
   </div>
   <p class="muted">Export with the Cookie-Editor browser extension (Export &rarr; Netscape) while logged in; Chrome/Firefox users can also use a "Get cookies.txt LOCALLY" extension.</p>
   <button type="submit" class="btn-primary">Save</button>
 </form>
-{% if cookie_file_exists %}
-<form method="post" action="/settings/cookies/delete">
-  <button type="submit" class="btn-danger">Remove</button>
-</form>
-{% endif %}
 {% endblock %}

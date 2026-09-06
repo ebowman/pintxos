@@ -329,6 +329,10 @@ def settings_page(request: Request) -> Response:
     cookie_domains = summary(jar) if jar else []
     cookie_file = str(cookie_path())
     cookie_file_exists = cookie_path().exists()
+    try:
+        cookies_text = cookie_path().read_text(errors="replace")
+    except OSError:  # removed between exists() and read: show an empty box
+        cookies_text = ""
     cookie_soon = (datetime.now(UTC) + timedelta(days=7)).date().isoformat()
     return templates.TemplateResponse(
         request,
@@ -348,6 +352,7 @@ def settings_page(request: Request) -> Response:
             "cookie_domains": cookie_domains,
             "cookie_file": cookie_file,
             "cookie_file_exists": cookie_file_exists,
+            "cookies_text": cookies_text,
             "cookie_soon": cookie_soon,
         },
     )
@@ -421,7 +426,8 @@ async def upload_cookies(
     if not data and cookies_text.strip():
         data = cookies_text.encode()
     if not data:
-        return _redirect("/settings", err="Nothing to upload")
+        cookie_path().unlink(missing_ok=True)
+        return _redirect("/settings", msg="Cookies removed")
     if len(data) > 1024 * 1024:  # 1 MiB
         return _redirect("/settings", err="File too large")
 
@@ -448,9 +454,3 @@ async def upload_cookies(
     return _redirect(
         "/settings", msg=f"Cookies saved: {count} cookies for {len(domains)} domains"
     )
-
-
-@app.post("/settings/cookies/delete")
-def delete_cookies() -> Response:
-    cookie_path().unlink(missing_ok=True)
-    return _redirect("/settings", msg="Cookies removed")

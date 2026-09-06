@@ -210,6 +210,36 @@ def test_save_jar_persists_rotated_cookie_and_refreshes_cache():
     assert reloaded._cookies[".ft.com"]["/"]["sid"].value == "rotated-value"
 
 
+def test_save_jar_skips_when_file_changed_on_disk():
+    write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
+
+    jar = get_jar()
+    assert jar is not None
+
+    write_cookies(
+        f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n"
+        f".economist.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tuid\tdef\n"
+    )
+    path = cookie_path()
+    new_content = path.read_text()
+
+    assert save_jar(jar) is False
+    assert path.read_text() == new_content
+
+
+def test_save_jar_skips_when_file_removed():
+    write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
+
+    jar = get_jar()
+    assert jar is not None
+
+    path = cookie_path()
+    path.unlink()
+
+    assert save_jar(jar) is False
+    assert not path.exists()
+
+
 def test_save_jar_missing_parent_dir_returns_false_without_raising(tmp_path):
     write_cookies(f".ft.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
     jar = get_jar()

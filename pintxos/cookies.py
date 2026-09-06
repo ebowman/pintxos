@@ -76,12 +76,25 @@ def save_jar(jar: http.cookiejar.MozillaCookieJar, path: Path | None = None) -> 
     """Write `jar` back to `path` (default cookie_path()) atomically. Never raises.
 
     # ponytail: save after every authenticated fetch; ceiling is one small write per
-    # article.
+    # article. Same-size rewrite within one mtime tick is still missed, same ceiling
+    # as get_jar().
     """
     global _cache
 
     if path is None:
         path = cookie_path()
+
+    if _cache is not None and _cache[1] is jar:
+        cached_path = Path(_cache[0][0])
+        try:
+            cached_stat = cached_path.stat()
+        except OSError:
+            log.info("cookies.txt changed on disk since it was loaded; not overwriting")
+            return False
+        cached_key = (str(cached_path), cached_stat.st_mtime_ns, cached_stat.st_size)
+        if cached_key != _cache[0]:
+            log.info("cookies.txt changed on disk since it was loaded; not overwriting")
+            return False
 
     tmp_path: Path | None = None
     try:

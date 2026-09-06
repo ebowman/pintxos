@@ -21,6 +21,7 @@ from pintxos.config import data_dir, get_setting, is_truthy
 from pintxos.cookies import cookie_path, expiry_for, get_jar, has_cookies_for, load_jar, summary
 from pintxos.db import db, init_db, now
 from pintxos.feed_out import render_rss
+from pintxos.fetch_status import summarize
 from pintxos.poll import _status as poll_status
 from pintxos.poll import poll_one, reschedule, retry_one, scheduler, start_scheduler
 
@@ -105,6 +106,26 @@ def _redirect(path: str, *, msg: str | None = None, err: str | None = None) -> R
     return RedirectResponse(url=path, status_code=303)
 
 
+def _feed_login_context(
+    conn: sqlite3.Connection, feed_id: int, feed_url: str, jar: object
+) -> tuple[str, bool, str | None]:
+    """Domain and cookie state for a feed, derived from its most recently published item.
+
+    Falls back to the feed URL's hostname (or "") when there is no item yet. Returns
+    (domain, cookies_loaded, cookie_expiry).
+    """
+    latest_link = conn.execute(
+        "SELECT link FROM items WHERE feed_id = ? ORDER BY published_at DESC, id DESC "
+        "LIMIT 1",
+        (feed_id,),
+    ).fetchone()
+    article_host = urlparse(latest_link["link"]).hostname if latest_link else None
+    domain = article_host or urlparse(feed_url).hostname or ""
+    cookies_loaded = bool(jar) and has_cookies_for(jar, f"https://{domain}/")
+    expiry = expiry_for(jar, domain)
+    return domain, cookies_loaded, expiry
+
+
 @app.get("/feeds/{feed_id}")
 def feed_edit_page(request: Request, feed_id: int) -> Response:
     with db() as conn:
@@ -123,24 +144,16 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
         auth_used = counts["auth_used"] or 0
         auth_failed = counts["auth_failed"] or 0
         auth_missing = counts["auth_missing"] or 0
-        latest_link = conn.execute(
-            "SELECT link FROM items WHERE feed_id = ? ORDER BY published_at DESC, id DESC "
-            "LIMIT 1",
-            (feed_id,),
-        ).fetchone()
+        jar = get_jar()
+        domain, cookies_loaded_for_domain, domain_expiry = _feed_login_context(
+            conn, feed_id, feed["url"], jar
+        )
     try:
         last_filtered = json.loads(feed["last_filtered"] or "[]")
         if not isinstance(last_filtered, list):
             raise ValueError("last_filtered is not a list")
     except ValueError:
         last_filtered = []
-
-    article_host = urlparse(latest_link["link"]).hostname if latest_link else None
-    domain = article_host or urlparse(feed["url"]).hostname or ""
-
-    jar = get_jar()
-    cookies_loaded_for_domain = bool(jar) and has_cookies_for(jar, f"https://{domain}/")
-    domain_expiry = expiry_for(jar, domain)
 
     return templates.TemplateResponse(
         request,
@@ -201,9 +214,12 @@ def _load_feed_rows(request: Request, feed_id: int | None = None) -> list[dict]:
     """
     sql = (
         "SELECT f.*, COUNT(i.id) AS item_count, "
-        "SUM(i.auth = 'used') AS auth_used, "
-        "SUM(i.auth = 'failed') AS auth_failed, "
-        "SUM(i.auth = 'missing') AS auth_missing "
+        "SUM(i.fetch_status IN ('teaser', 'blocked') "
+        "AND (i.auth = 'missing' OR i.auth IS NULL)) AS paywalled, "
+        "SUM(i.auth = 'failed') AS login_failed, "
+        "SUM(i.fallback = 1 AND (i.auth = 'missing' OR i.auth IS NULL) "
+        "AND (i.fetch_status = 'error' OR i.fetch_status IS NULL)) AS unreadable, "
+        "SUM(i.auth = 'used') AS used "
         "FROM feeds f LEFT JOIN items i ON i.feed_id = f.id"
     )
     params: tuple = ()
@@ -214,14 +230,33 @@ def _load_feed_rows(request: Request, feed_id: int | None = None) -> list[dict]:
     with db() as conn:
         rows = conn.execute(sql, params).fetchall()
         base_url = get_setting("PINTXOS_BASE_URL", conn) or str(request.base_url).rstrip("/")
-    feeds = []
-    for row in rows:
-        feed = dict(row)
-        feed["output_url"] = f"{base_url}/feeds/{feed['id']}.xml"
-        feed["auth_used"] = feed["auth_used"] or 0
-        feed["auth_failed"] = feed["auth_failed"] or 0
-        feed["auth_missing"] = feed["auth_missing"] or 0
-        feeds.append(feed)
+        jar = get_jar()
+        feeds = []
+        for row in rows:
+            feed = dict(row)
+            feed["output_url"] = f"{base_url}/feeds/{feed['id']}.xml"
+            paywalled = feed.pop("paywalled") or 0
+            login_failed = feed.pop("login_failed") or 0
+            unreadable = feed.pop("unreadable") or 0
+            used = feed.pop("used") or 0
+            # ponytail: one extra query per feed for the latest item link/domain;
+            # fine at feeds-table scale, would need batching if the feed count grows large.
+            domain, cookies_loaded, expiry = _feed_login_context(
+                conn, feed["id"], feed["url"], jar
+            )
+            feed["fetch_status"] = summarize(
+                {
+                    "paywalled": paywalled,
+                    "login_failed": login_failed,
+                    "unreadable": unreadable,
+                    "used": used,
+                },
+                total=feed["item_count"],
+                domain=domain,
+                cookies_loaded=cookies_loaded,
+                cookie_expiry=expiry,
+            )
+            feeds.append(feed)
     return feeds
 
 

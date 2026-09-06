@@ -117,10 +117,21 @@ def _poll_button(page: str) -> str:
     return page[start:end]
 
 
+def _items_cell(page: str, feed_id: int) -> str:
+    """The Items <td> contents for one feed row (count and ads-skipped line only)."""
+    row_start = page.index(f'<tr id="feed-{feed_id}"')
+    row_end = page.index("</tr>", row_start)
+    row = page[row_start:row_end]
+    start = row.index('<td class="copy">')
+    start = row.index("</td>", start) + len("</td>")
+    end = row.index('<td class="muted nowrap"', start)
+    return row[start:end]
+
+
 def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
-    """No Status column: the poll button itself reads Polling… (disabled, progress in the
-    tooltip, page polls /status in place), Failed (danger tint, error in the tooltip, still
-    clickable) or Poll now (idle)."""
+    """Poll progress does not live in the Status column: the poll button itself reads
+    Polling… (disabled, progress in the tooltip, page polls /status in place), Failed
+    (danger tint, error in the tooltip, still clickable) or Poll now (idle)."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
@@ -137,7 +148,7 @@ def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
         assert 'title="Summarizing 2/5"' in btn
         assert "btn-polling" in btn
         assert "btn-danger" not in btn
-        assert "<th>Status</th>" not in page
+        assert "Summarizing 2/5" not in _items_cell(page, 1)
 
         # idle
         monkeypatch.setattr(app_module, "poll_status", {})
@@ -236,19 +247,19 @@ def test_feed_row_endpoint_matches_the_row_on_the_index(monkeypatch):
     assert page[start:end] == row
 
 
-def test_last_error_column_shows_dash_or_message(monkeypatch):
+def test_status_column_shows_last_error_message_unchanged(monkeypatch):
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/").text
-        assert "<th>Last error</th>" in page
-        assert '<td class="error"><span class="muted">-</span></td>' in page
+        assert "<th>Status</th>" in page
+        assert '<td class="status">' in page
+        assert '<div class="error">' not in page  # no last_error yet
 
         with db() as conn:
             conn.execute("UPDATE feeds SET last_error = ? WHERE id = 1", ("timed out",))
         page = c.get("/").text
-        assert '<td class="error">timed out</td>' in page
-        assert '<span class="muted">-</span>' not in page
+        assert '<div class="error">timed out</div>' in page
 
 
 def test_settings_post_persists():
@@ -878,8 +889,8 @@ def test_index_colgroup_widths_sum_to_100_percent(monkeypatch):
     assert len(widths) == 7
     assert sum(widths) == 100
     assert page.count("<th>") == 7
-    assert "<th>Status</th>" not in page
-    assert "<th>Last error</th>" in page
+    assert "<th>Status</th>" in page
+    assert "<th>Last error</th>" not in page
 
 
 def test_index_empty_state_colspan_matches_columns():
@@ -1183,13 +1194,20 @@ def test_settings_page_escapes_cookie_text():
 
 
 def _insert_item(
-    feed_id, guid, *, auth=None, link="https://www.example.com/a", published_at=None, fallback=0
+    feed_id,
+    guid,
+    *,
+    auth=None,
+    link="https://www.example.com/a",
+    published_at=None,
+    fallback=0,
+    fetch_status=None,
 ):
     with db() as conn:
         conn.execute(
             "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
-            "headline, summary, fallback, auth, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "headline, summary, fallback, auth, fetch_status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 feed_id,
                 guid,
@@ -1200,16 +1218,18 @@ def _insert_item(
                 "Summary.",
                 fallback,
                 auth,
+                fetch_status,
                 db_now(),
             ),
         )
 
 
-def test_index_shows_login_indicator_counts_without_adding_a_column(monkeypatch):
+def test_index_items_cell_no_longer_shows_login_indicator_counts(monkeypatch):
+    """The 'via login / need login / login failed' line left the Items cell for the
+    Status column; Items keeps only the count and the ads-skipped line."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
-        c.post("/feeds", data={"url": "https://example.org/feed.xml"}, follow_redirects=False)
 
         _insert_item(1, "g1", auth="used")
         _insert_item(1, "g2", auth="used")
@@ -1219,21 +1239,89 @@ def test_index_shows_login_indicator_counts_without_adding_a_column(monkeypatch)
 
         page = c.get("/").text
 
-    assert "2 via login" in page
-    assert "1 need login" in page
-    assert "1 login failed" in page
     assert "<div>5</div>" in page  # item_count for feed 1
 
-    # feed 2 has no items: none of the three labels appear for it. Since feed 1's row
-    # already contains these labels, check they appear exactly once each (only feed 1's row).
-    assert page.count("via login") == 1
-    assert page.count("need login") == 1
-    assert page.count("login failed") == 1
+    items_cell = _items_cell(page, 1)
+    assert "via login" not in items_cell
+    assert "need login" not in items_cell
+    assert "login failed" not in items_cell
 
-    # The Items cell gained extra muted lines, not a new column.
+    # No new column: still 7 <th>s, 7 <col> widths.
     widths = re.findall(r'<col style="width: (\d+)%">', page)
     assert len(widths) == 7
     assert page.count("<th>") == 7
+
+
+def test_status_cell_shows_paywalled_with_tooltip_and_settings_link(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="missing", fetch_status="teaser")
+        _insert_item(1, "g2", auth="missing", fetch_status="teaser")
+        _insert_item(1, "g3", auth=None, fetch_status="teaser")
+
+        page = c.get("/").text
+
+    assert "3 paywalled" in page
+    assert "ℹ️" in page
+    assert 'title="' in page
+    assert "no login cookies are saved for" in page
+    assert 'href="/settings#paywall"' in page
+    assert "add login" in page
+
+
+def test_status_cell_shows_login_failed_when_cookies_loaded(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="failed", fetch_status="teaser")
+        write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
+
+        page = c.get("/").text
+
+    assert "login failed" in page
+    assert "check cookies" in page
+
+
+def test_status_cell_shows_unreadable_for_error_and_null_fetch_status(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth=None, fallback=1, fetch_status="error")
+        _insert_item(1, "g2", auth=None, fallback=1, fetch_status=None)
+
+        page = c.get("/").text
+
+    assert "2 unreadable" in page
+
+
+def test_status_cell_shows_ok_muted_for_clean_feed(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth=None, fetch_status="ok")
+        _insert_item(1, "g2", auth=None, fetch_status="ok")
+
+        page = c.get("/").text
+
+    assert 'class="info muted"' in page
+    assert ">OK " in page
+
+
+def test_feed_row_endpoint_matches_status_cell_on_index(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="missing", fetch_status="teaser")
+        _insert_item(1, "g2", auth="missing", fetch_status="teaser")
+
+        page = c.get("/").text
+        row = c.get("/feeds/1/row").text.strip()
+
+    start = page.index('<tr id="feed-1"')
+    end = page.index("</tr>", start) + len("</tr>")
+    assert page[start:end] == row
+    assert "2 paywalled" in row
 
 
 def test_feed_edit_page_shows_login_section_with_sentences(monkeypatch):

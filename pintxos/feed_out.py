@@ -19,6 +19,17 @@ _AUTH_NOTES = {
     ),
 }
 
+_FETCH_NOTES = {
+    "teaser": (
+        "<p><em>Only a teaser was available (paywall); "
+        "summarized from the feed excerpt.</em></p>"
+    ),
+    "blocked": (
+        "<p><em>The site blocked the fetch; "
+        "summarized from the feed excerpt.</em></p>"
+    ),
+}
+
 
 def render_rss(
     feed: sqlite3.Row, items: Sequence[sqlite3.Row]
@@ -44,12 +55,20 @@ def render_rss(
         if words:
             description += f"<p><em>{format_stats(words)}</em></p>"
         auth = item["auth"]
-        if auth in _AUTH_NOTES:
-            description += _AUTH_NOTES[auth]
-        elif auth is None and item["fallback"]:
-            description += (
-                "<p><em>Note: article fetch failed; summarized from feed excerpt.</em></p>"
-            )
+        fetch_status = item["fetch_status"]
+        if auth == "used":
+            description += _AUTH_NOTES["used"]
+        elif auth == "failed":
+            description += _AUTH_NOTES["failed"]
+        elif fetch_status in _FETCH_NOTES:
+            description += _FETCH_NOTES[fetch_status]
+        elif item["fallback"]:
+            if auth == "missing":
+                description += _AUTH_NOTES["missing"]
+            elif auth is None:
+                description += (
+                    "<p><em>Note: article fetch failed; summarized from feed excerpt.</em></p>"
+                )
         description += f"<p>Original: {item['original_title']}</p>"
         ET.SubElement(entry, "description").text = description
 

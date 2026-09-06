@@ -103,11 +103,42 @@ def _seed_auth_cases():
     return feed_id
 
 
+def _seed_fetch_status_cases():
+    with db() as conn:
+        feed_id = conn.execute(
+            "INSERT INTO feeds(url, title, created_at) VALUES (?, ?, ?)",
+            (FEED_URL, "Example Feed", now()),
+        ).lastrowid
+        rows = [
+            # (guid suffix, headline suffix, auth, fetch_status)
+            ("teaser", "Teaser", None, "teaser"),
+            ("blocked", "Blocked", None, "blocked"),
+            ("used-teaser", "UsedTeaser", "used", "teaser"),
+            ("failed-blocked", "FailedBlocked", "failed", "blocked"),
+            ("error", "Error", None, "error"),
+        ]
+        for guid, headline, auth, fetch_status in rows:
+            conn.execute(
+                """INSERT INTO items
+                (feed_id, guid, link, original_title, published_at, headline, summary, fallback,
+                 auth, fetch_status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    feed_id, f"guid-{guid}", f"https://example.com/{guid}", f"Original {headline}",
+                    "2026-09-03T12:00:00+00:00", f"Headline {headline}", f"Summary {guid}.",
+                    1, auth, fetch_status, now(),
+                ),
+            )
+    return feed_id
+
+
 NOTES = {
     "used": "Read with your subscription.",
     "missing": "Login may be required; summarized from the feed excerpt.",
     "failed": "Your saved login did not work (cookies expired?); summarized from the feed excerpt.",
     "null_fallback": "Note: article fetch failed; summarized from feed excerpt.",
+    "teaser": "Only a teaser was available (paywall); summarized from the feed excerpt.",
+    "blocked": "The site blocked the fetch; summarized from the feed excerpt.",
 }
 
 
@@ -119,6 +150,11 @@ NOTES = {
         (_seed_auth_cases, None, "Headline Failed", "failed"),
         (_seed, "/feeds/1.xml", "Headline Two", "null_fallback"),
         (_seed, "/feeds/1.xml", "Headline One", None),
+        (_seed_fetch_status_cases, None, "Headline Teaser", "teaser"),
+        (_seed_fetch_status_cases, None, "Headline Blocked", "blocked"),
+        (_seed_fetch_status_cases, None, "Headline UsedTeaser", "used"),
+        (_seed_fetch_status_cases, None, "Headline FailedBlocked", "failed"),
+        (_seed_fetch_status_cases, None, "Headline Error", "null_fallback"),
     ],
 )
 def test_feed_xml_note_reflects_auth_and_fallback(seed_fn, feed_url, headline, expected_note_key):

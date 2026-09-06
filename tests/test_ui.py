@@ -128,6 +128,36 @@ def _items_cell(page: str, feed_id: int) -> str:
     return row[start:end]
 
 
+def _status_cell(page: str, feed_id: int) -> str:
+    """The Status <td> contents (raw HTML) for one feed row in the index table."""
+    row_start = page.index(f'<tr id="feed-{feed_id}"')
+    row_end = page.index("</tr>", row_start)
+    row = page[row_start:row_end]
+    start = row.index('<td class="status">')
+    end = row.index("</td>", start)
+    return row[start:end]
+
+
+def _feed_page_status(page: str) -> str:
+    """The Status block (raw HTML) on the feed-edit page: after the heading, up to the
+    next <form> (the retry-fallback form when present, else the end of the page)."""
+    start = page.index("<h2>Status</h2>") + len("<h2>Status</h2>")
+    rest = page[start:]
+    form_pos = rest.find("<form")
+    end = start + form_pos if form_pos != -1 else len(page)
+    return page[start:end]
+
+
+def _strip_tags(html: str) -> str:
+    """Visible text only: tags dropped, whitespace collapsed."""
+    return " ".join(re.sub(r"<[^>]+>", " ", html).split())
+
+
+def _titles(html: str) -> list[str]:
+    """The title="..." tooltip values found in html, in document order."""
+    return re.findall(r'title="([^"]*)"', html)
+
+
 def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
     """Poll progress does not live in the Status column: the poll button itself reads
     Polling… (disabled, progress in the tooltip, page polls /status in place), Failed
@@ -1324,61 +1354,92 @@ def test_feed_row_endpoint_matches_status_cell_on_index(monkeypatch):
     assert "2 paywalled" in row
 
 
-def test_feed_edit_page_shows_login_section_with_sentences(monkeypatch):
+def test_feed_edit_page_status_shows_paywalled_with_tooltip_and_settings_link(monkeypatch):
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
-        _insert_item(1, "g1", auth="used")
-        _insert_item(1, "g2", auth="used")
-        _insert_item(1, "g3", auth="missing")
-        _insert_item(1, "g4", auth="failed")
+        _insert_item(1, "g1", auth="missing", fetch_status="teaser")
+        _insert_item(1, "g2", auth="missing", fetch_status="teaser")
+        _insert_item(1, "g3", auth=None, fetch_status="teaser")
 
-        # No cookies.txt: "Add your subscription cookies" link is present.
         page = c.get("/feeds/1").text
 
-    assert "<h2>Login</h2>" in page
-    assert "2 items fetched with your subscription" in page
-    assert "1 needs a login" in page
-    assert "1 login failed" in page
-    assert "Add your subscription cookies" in page
-    assert '<a href="/settings">Settings page</a>' in page
+    assert "<h2>Status</h2>" in page
+    assert "3 paywalled" in page
+    assert "ℹ️" in page
+    assert 'title="' in page
+    assert "no login cookies are saved for" in page
+    assert 'href="/settings#paywall"' in page
+    assert "add login" in page
 
 
-def test_feed_edit_page_login_section_reflects_cookies_written_after_first_render(monkeypatch):
-    """Writing cookies.txt mid-session changes the Login section on the next render."""
+def test_feed_edit_page_status_shows_login_failed_when_cookies_loaded(monkeypatch):
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
-        _insert_item(1, "g1", auth="missing")
-        _insert_item(1, "g2", auth="failed")
-
-        page = c.get("/feeds/1").text
-        assert "Add your subscription cookies" in page
-
+        _insert_item(1, "g1", auth="failed", fetch_status="teaser")
         write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc\n")
 
         page = c.get("/feeds/1").text
-        assert "Add your subscription cookies" not in page
-        assert "1 login failed" in page
-        assert "Cookies for www.example.com expire 2100-01-01." in page
 
-        # Session cookie (0 expiry): reported as a session cookie, not a date.
-        write_cookies(".example.com\tTRUE\t/\tFALSE\t0\tsid\tabc\n")
-
-        page = c.get("/feeds/1").text
-        assert "Cookies for www.example.com are session cookies." in page
+    assert "1 login failed" in page
+    assert "check cookies" in page
 
 
-def test_feed_edit_page_no_login_section_when_auth_all_null(monkeypatch):
+def test_feed_edit_page_status_shows_unreadable_for_error_and_null_fetch_status(monkeypatch):
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
-        _insert_item(1, "g1", auth=None)
-        _insert_item(1, "g2", auth=None)
+        _insert_item(1, "g1", auth=None, fallback=1, fetch_status="error")
+        _insert_item(1, "g2", auth=None, fallback=1, fetch_status=None)
 
         page = c.get("/feeds/1").text
 
-    assert "<h2>Login</h2>" not in page
+    assert "2 unreadable" in page
+
+
+def test_feed_edit_page_status_shows_ok_muted_for_clean_feed(monkeypatch):
+    """The Status heading and its (muted) OK line are always shown, even for a feed
+    with nothing wrong -- unlike the old Login section, which was omitted entirely."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth=None, fetch_status="ok")
+        _insert_item(1, "g2", auth=None, fetch_status="ok")
+
+        page = c.get("/feeds/1").text
+
+    assert "<h2>Status</h2>" in page
+    assert 'class="info muted"' in page
+    assert ">OK " in page
+
+
+def test_feed_page_status_matches_feeds_table(monkeypatch):
+    """The feed-edit page's Status block and the feeds-table Status cell are built
+    from the same counts and the same summarize() call; for the same feed they must
+    read identically, both the visible phrases and the tooltip text."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth="missing", fetch_status="teaser")
+        _insert_item(1, "g2", auth="failed", fetch_status="teaser")
+        _insert_item(1, "g3", auth=None, fallback=1, fetch_status="error")
+        _insert_item(1, "g4", auth="used", fetch_status="ok")
+
+        index_page = c.get("/").text
+        feed_page = c.get("/feeds/1").text
+
+    index_status = _status_cell(index_page, 1)
+    feed_status = _feed_page_status(feed_page)
+
+    index_text = _strip_tags(index_status)
+    feed_text = _strip_tags(feed_status)
+
+    assert index_text == feed_text
+    assert "paywalled" in index_text
+    assert "login failed" in index_text
+    assert "unreadable" in index_text
+    assert _titles(index_status) == _titles(feed_status)
 
 
 # --- retry-fallback route and pintxos.poll.retry_fallback -------------------

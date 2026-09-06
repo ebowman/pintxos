@@ -28,6 +28,28 @@ from pintxos.poll import poll_one, reschedule, retry_one, scheduler, start_sched
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+# ponytail: the four fetch-status buckets, written once and shared by the feeds-table
+# query (_load_feed_rows, column prefix "i.") and the single-feed query
+# (feed_edit_page, no prefix) so the two pages can never disagree on the numbers.
+# Semantics match pintxos.fetch_status.summarize()'s expectations exactly.
+_BUCKET_SQL = {
+    "paywalled": (
+        "SUM({i}fetch_status IN ('teaser', 'blocked') "
+        "AND ({i}auth = 'missing' OR {i}auth IS NULL))"
+    ),
+    "login_failed": "SUM({i}auth = 'failed')",
+    "unreadable": (
+        "SUM({i}fallback = 1 AND ({i}auth = 'missing' OR {i}auth IS NULL) "
+        "AND ({i}fetch_status = 'error' OR {i}fetch_status IS NULL))"
+    ),
+    "used": "SUM({i}auth = 'used')",
+}
+
+
+def _bucket_sql(i: str) -> str:
+    """The four bucket expressions as 'expr AS name' clauses, column-prefixed by i."""
+    return ", ".join(f"{expr.format(i=i)} AS {name}" for name, expr in _BUCKET_SQL.items())
+
 
 def ago(iso: str | None, now: datetime | None = None) -> str:
     """Render an ISO8601 UTC timestamp as a compact relative time.
@@ -135,18 +157,26 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
         global_filter_ads_on = is_truthy(get_setting("PINTXOS_FILTER_ADS", conn))
         global_patterns = get_setting("PINTXOS_AD_TITLE_PATTERNS", conn) or ""
         counts = conn.execute(
-            "SELECT SUM(fallback = 1) AS fallback_count, SUM(auth = 'used') AS auth_used, "
-            "SUM(auth = 'failed') AS auth_failed, SUM(auth = 'missing') AS auth_missing "
-            "FROM items WHERE feed_id = ?",
+            f"SELECT COUNT(*) AS total, SUM(fallback = 1) AS fallback_count, "
+            f"{_bucket_sql('')} FROM items WHERE feed_id = ?",
             (feed_id,),
         ).fetchone()
         fallback_count = counts["fallback_count"] or 0
-        auth_used = counts["auth_used"] or 0
-        auth_failed = counts["auth_failed"] or 0
-        auth_missing = counts["auth_missing"] or 0
         jar = get_jar()
         domain, cookies_loaded_for_domain, domain_expiry = _feed_login_context(
             conn, feed_id, feed["url"], jar
+        )
+        fetch_status = summarize(
+            {
+                "paywalled": counts["paywalled"] or 0,
+                "login_failed": counts["login_failed"] or 0,
+                "unreadable": counts["unreadable"] or 0,
+                "used": counts["used"] or 0,
+            },
+            total=counts["total"] or 0,
+            domain=domain,
+            cookies_loaded=cookies_loaded_for_domain,
+            cookie_expiry=domain_expiry,
         )
     try:
         last_filtered = json.loads(feed["last_filtered"] or "[]")
@@ -165,12 +195,7 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "global_patterns": global_patterns,
             "last_filtered": last_filtered,
             "fallback_count": fallback_count,
-            "auth_used": auth_used,
-            "auth_failed": auth_failed,
-            "auth_missing": auth_missing,
-            "domain": domain,
-            "cookies_loaded_for_domain": cookies_loaded_for_domain,
-            "domain_expiry": domain_expiry,
+            "fetch_status": fetch_status,
         },
     )
 
@@ -214,12 +239,7 @@ def _load_feed_rows(request: Request, feed_id: int | None = None) -> list[dict]:
     """
     sql = (
         "SELECT f.*, COUNT(i.id) AS item_count, "
-        "SUM(i.fetch_status IN ('teaser', 'blocked') "
-        "AND (i.auth = 'missing' OR i.auth IS NULL)) AS paywalled, "
-        "SUM(i.auth = 'failed') AS login_failed, "
-        "SUM(i.fallback = 1 AND (i.auth = 'missing' OR i.auth IS NULL) "
-        "AND (i.fetch_status = 'error' OR i.fetch_status IS NULL)) AS unreadable, "
-        "SUM(i.auth = 'used') AS used "
+        f"{_bucket_sql('i.')} "
         "FROM feeds f LEFT JOIN items i ON i.feed_id = f.id"
     )
     params: tuple = ()

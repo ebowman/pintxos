@@ -32,6 +32,9 @@ def summarize(
     Returns a list of {"text", "tooltip", "link", "ok"} dicts. "link" is either
     None or {"href": "/settings#paywall", "label": ...}.
     """
+    if total == 0:
+        return [{"text": "-", "tooltip": "No items yet.", "link": None, "ok": True}]
+
     paywalled = counts.get("paywalled", 0)
     login_failed = counts.get("login_failed", 0)
     unreadable = counts.get("unreadable", 0)

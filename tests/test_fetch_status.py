@@ -12,6 +12,18 @@ def _base_kwargs(**overrides):
     return kwargs
 
 
+def test_summarize_empty_feed_shows_dash():
+    entries = summarize({}, **_base_kwargs(total=0))
+    assert entries == [
+        {
+            "text": "-",
+            "tooltip": "No items yet.",
+            "link": None,
+            "ok": True,
+        }
+    ]
+
+
 def test_ok_when_no_bad_buckets_and_no_used():
     entries = summarize({}, **_base_kwargs(total=10))
     assert entries == [

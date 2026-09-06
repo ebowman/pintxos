@@ -179,6 +179,7 @@ def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
         assert "btn-polling" in btn
         assert "btn-danger" not in btn
         assert "Summarizing 2/5" not in _items_cell(page, 1)
+        assert "Summarizing 2/5" not in _status_cell(page, 1)
 
         # idle
         monkeypatch.setattr(app_module, "poll_status", {})
@@ -1311,6 +1312,8 @@ def test_status_cell_shows_login_failed_when_cookies_loaded(monkeypatch):
 
     assert "login failed" in page
     assert "check cookies" in page
+    assert "Cookies for www.example.com are saved" in page
+    assert "(earliest expiry 2100-01-01)" in page
 
 
 def test_status_cell_shows_unreadable_for_error_and_null_fetch_status(monkeypatch):
@@ -1384,6 +1387,8 @@ def test_feed_edit_page_status_shows_login_failed_when_cookies_loaded(monkeypatc
 
     assert "1 login failed" in page
     assert "check cookies" in page
+    assert "Cookies for www.example.com are saved" in page
+    assert "(earliest expiry 2100-01-01)" in page
 
 
 def test_feed_edit_page_status_shows_unreadable_for_error_and_null_fetch_status(monkeypatch):

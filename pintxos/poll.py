@@ -41,8 +41,12 @@ def _make_client(profile: str | None) -> curl_cffi.requests.Session:
 
 
 def _parse_profiles(value: str) -> list[str]:
-    """Split a comma-separated PINTXOS_IMPERSONATE value into profiles; "" means none."""
-    return [p.strip() for p in value.split(",")] if value else [""]
+    """Split a comma-separated PINTXOS_IMPERSONATE value into profiles; "" means none.
+
+    Entries that are empty after stripping (from stray commas or blank spaces) are
+    dropped; if nothing remains, the result is [""] so impersonation stays off.
+    """
+    return [p for p in (s.strip() for s in value.split(",")) if p] or [""]
 
 
 # ponytail: one shared client per profile and one scheduler at module level. The

@@ -1,6 +1,6 @@
 # Pintxøs – Bite-sized, honest RSS feeds.
 
-[![build](https://github.com/janw76/pintxos/actions/workflows/docker.yml/badge.svg)](https://github.com/janw76/pintxos/actions/workflows/docker.yml)
+[![build](https://github.com/janw76/pintxos/actions/workflows/docker.yml/badge.svg)](https://github.com/janw76/pintxos/actions/workflows/docker.yml) [![license](https://img.shields.io/github/license/janw76/pintxos)](LICENSE) [![image](https://img.shields.io/badge/ghcr.io-janw76%2Fpintxos-blue?logo=docker)](https://github.com/janw76/pintxos/pkgs/container/pintxos)
 
 **Garbage in, sanity out.**
 

@@ -941,6 +941,12 @@ def _reset_client_jar(monkeypatch):
     poll._clients[0].cookies = curl_cffi.requests.Cookies()
 
 
+@pytest.fixture
+def _reset_last_request(monkeypatch):
+    """Per-host pacing tests must not leak the last-request clock across test order."""
+    monkeypatch.setattr(poll, "_last_request", {})
+
+
 def test_get_installs_jar_on_client_and_clears_it_when_file_removed(_reset_client_jar, monkeypatch):
     write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
 
@@ -992,32 +998,46 @@ def _ok_response():
     return FakeResponse(b"<html>ok</html>", content_type="text/html")
 
 
-def test_get_retries_challenge_then_succeeds(_reset_client_jar, monkeypatch):
+def test_get_retries_challenge_then_succeeds(_reset_client_jar, _reset_last_request, monkeypatch):
     fake = FakeClient([_challenge_response(), _ok_response()])
     monkeypatch.setattr(poll, "_clients", [fake])
+    clock = [1000.0]
     sleeps = []
-    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr(poll.time, "sleep", fake_sleep)
+    monkeypatch.setattr(poll.time, "monotonic", lambda: clock[0])
 
     resp = poll._get("https://example.com/a")
 
     assert resp.status_code == 200
-    assert sleeps == [poll._CHALLENGE_PAUSE]
+    assert sleeps == [poll._HOST_PAUSE]
 
 
-def test_get_gives_up_after_all_challenge_attempts(_reset_client_jar, monkeypatch):
+def test_get_gives_up_after_all_challenge_attempts(_reset_client_jar, _reset_last_request, monkeypatch):
     responses = [_challenge_response(), _challenge_response(), _challenge_response()]
     fake = FakeClient(responses)
     monkeypatch.setattr(poll, "_clients", [fake])
+    clock = [1000.0]
     sleeps = []
-    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr(poll.time, "sleep", fake_sleep)
+    monkeypatch.setattr(poll.time, "monotonic", lambda: clock[0])
 
     resp = poll._get("https://example.com/a")
 
     assert resp is responses[-1]
-    assert sleeps == [poll._CHALLENGE_PAUSE, poll._CHALLENGE_PAUSE]
+    assert sleeps == [poll._HOST_PAUSE, poll._HOST_PAUSE]
 
 
-def test_get_gives_up_after_all_challenge_attempts_reports_blocked(_reset_client_jar, monkeypatch):
+def test_get_gives_up_after_all_challenge_attempts_reports_blocked(_reset_client_jar, _reset_last_request, monkeypatch):
     fake = FakeClient([_challenge_response(), _challenge_response(), _challenge_response()])
     monkeypatch.setattr(poll, "_clients", [fake])
     monkeypatch.setattr(poll.time, "sleep", lambda s: None)
@@ -1028,7 +1048,7 @@ def test_get_gives_up_after_all_challenge_attempts_reports_blocked(_reset_client
     assert status == "blocked"
 
 
-def test_get_retries_second_attempt_on_next_profile(_reset_client_jar, monkeypatch):
+def test_get_retries_second_attempt_on_next_profile(_reset_client_jar, _reset_last_request, monkeypatch):
     client1 = FakeClient([_challenge_response(), _ok_response()])
     client2 = FakeClient([_ok_response()])
     monkeypatch.setattr(poll, "_clients", [client1, client2])
@@ -1041,7 +1061,7 @@ def test_get_retries_second_attempt_on_next_profile(_reset_client_jar, monkeypat
     assert client2.calls == 1
 
 
-def test_get_plain_403_returns_immediately_without_retry(_reset_client_jar, monkeypatch):
+def test_get_plain_403_returns_immediately_without_retry(_reset_client_jar, _reset_last_request, monkeypatch):
     fake = FakeClient([_plain_403_response(), _ok_response()])
     monkeypatch.setattr(poll, "_clients", [fake])
     sleeps = []
@@ -1052,6 +1072,38 @@ def test_get_plain_403_returns_immediately_without_retry(_reset_client_jar, monk
     assert resp.status_code == 403
     assert fake.calls == 1
     assert sleeps == []
+
+
+# --- Per-host pacing -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url1, url2, elapsed, expected_sleeps",
+    [
+        # Same host, 0.5s elapsed: second call waits out the remaining 1.5s.
+        ("https://example.com/a", "https://example.com/b", 0.5, [1.5]),
+        # Different hosts: no pacing wait.
+        ("https://example.com/a", "https://other.com/b", 0.5, []),
+        # Same host, but the pause has already elapsed: no wait.
+        ("https://example.com/a", "https://example.com/b", 3.0, []),
+    ],
+)
+def test_get_paces_requests_to_same_host(
+    _reset_client_jar, _reset_last_request, monkeypatch, url1, url2, elapsed, expected_sleeps
+):
+    fake = FakeClient([_ok_response(), _ok_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    sleeps = []
+    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    clock = [1000.0]
+    monkeypatch.setattr(poll.time, "monotonic", lambda: clock[0])
+
+    poll._get(url1)
+    clock[0] += elapsed
+    poll._get(url2)
+
+    assert sleeps == pytest.approx(expected_sleeps)
 
 
 @pytest.mark.parametrize(

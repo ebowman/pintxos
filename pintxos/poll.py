@@ -9,6 +9,7 @@ import re
 import time
 from datetime import UTC, datetime, timedelta
 from http.cookiejar import MozillaCookieJar
+from urllib.parse import urlparse
 
 import curl_cffi.requests
 import feedparser
@@ -62,7 +63,8 @@ _client_jar: MozillaCookieJar | None = None
 _status: dict[int, str] = {}
 
 _CHALLENGE_ATTEMPTS = 3
-_CHALLENGE_PAUSE = 2.0
+_HOST_PAUSE = 2.0
+_last_request: dict[str, float] = {}
 
 
 def _get(url: str) -> curl_cffi.requests.Response:
@@ -79,14 +81,19 @@ def _get(url: str) -> curl_cffi.requests.Response:
             client.cookies = cookies
         _client_jar = jar
 
-    # A challenge is probabilistic per request; retry across the profile list.
+    host = urlparse(url).hostname or ""
+    # A challenge is probabilistic per request; retry across the profile list. The
+    # per-host pacing below already waits out the two seconds between attempts.
     for attempt in range(_CHALLENGE_ATTEMPTS):
+        wait = _last_request.get(host, 0.0) + _HOST_PAUSE - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
         resp = _clients[attempt % len(_clients)].get(url)
+        _last_request[host] = time.monotonic()
         if resp.status_code != 403 or resp.headers.get("cf-mitigated") != "challenge":
             return resp
         if attempt + 1 < _CHALLENGE_ATTEMPTS:
             log.info("cloudflare challenge on %s, retrying", url)
-            time.sleep(_CHALLENGE_PAUSE)
     return resp
 
 

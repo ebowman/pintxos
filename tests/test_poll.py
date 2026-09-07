@@ -160,6 +160,34 @@ def test_fallback_item_has_null_word_count(feed_id, calls):
     assert all(row["fallback"] == 1 for row in rows)
 
 
+def test_fetched_article_text_stored_with_newlines(feed_id, calls, monkeypatch):
+    article_text = "Paragraph one.\n\nParagraph two.\n\n" + "padding " * 30
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (article_text, "ok"))
+    poll.poll_feed(feed_id)
+    rows = items()
+    assert rows
+    texts_by_title = {title: text for text, title, _url in calls}
+    for row in rows:
+        assert row["text"] == texts_by_title[row["original_title"]]
+        assert "\n" in row["text"]
+
+
+def test_fallback_excerpt_at_least_min_chars_is_stored(feed_id, calls):
+    poll.poll_all()
+    rows = {row["original_title"]: row for row in items()}
+    texts_by_title = {title: text for text, title, _url in calls}
+    row = rows["First article about a rocket launch"]
+    assert row["text"] == texts_by_title["First article about a rocket launch"]
+    assert "ENCODED BODY" in row["text"]
+
+
+def test_fallback_excerpt_below_min_chars_stores_null_text(feed_id, calls):
+    poll.poll_all()
+    rows = {row["original_title"]: row for row in items()}
+    row = rows["Third article with almost no body text at all"]
+    assert row["text"] is None
+
+
 def test_prune_keeps_newest_n(feed_id, calls, monkeypatch):
     with db() as conn:
         for n in range(5):
@@ -470,6 +498,37 @@ def test_retry_fallback_updates_fetch_status_when_summarize_fails(feed_id, monke
         assert row["headline"] == "old headline"  # untouched: summarize never returned
         assert row["summary"] == "old summary"
     # a SummarizeError on the first item must not abort the loop before the second runs
+
+
+def test_retry_fallback_success_writes_text(feed_id, monkeypatch):
+    item_id = _seed_fallback_item(feed_id)
+    fetched_text = "FULL ARTICLE TEXT " * 20
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (fetched_text, "ok"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url: ("New", "New summary"))
+
+    poll.retry_fallback(feed_id)
+
+    rows = items()
+    assert [row["id"] for row in rows] == [item_id]
+    assert rows[0]["text"] == fetched_text
+
+
+def test_retry_fallback_failure_leaves_text_unchanged(feed_id, monkeypatch):
+    item_id = _seed_fallback_item(feed_id)
+    with db() as conn:
+        conn.execute("UPDATE items SET text = ? WHERE id = ?", ("original text", item_id))
+
+    def boom_summarize(*_args, **_kwargs):
+        raise AssertionError("summarize should not be called when the fetch fails")
+
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "blocked"))
+    monkeypatch.setattr(poll, "summarize", boom_summarize)
+
+    poll.retry_fallback(feed_id)
+
+    rows = items()
+    assert [row["id"] for row in rows] == [item_id]
+    assert rows[0]["text"] == "original text"
 
 
 def test_ui_can_write_while_polling(feed_id, calls, monkeypatch):

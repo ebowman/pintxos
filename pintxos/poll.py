@@ -277,11 +277,13 @@ def poll_feed(feed_id: int) -> bool:
             # text (before summarize() truncates it); fallback items stay NULL.
             text, auth, words, fetch_status = _fetch_and_auth(link, jar)
             fallback = 0
+            title_only = False
             if text is None:
                 fallback = 1
                 text = _entry_text(entry)
                 if len(text) < MIN_FALLBACK_CHARS:
                     text = original_title
+                    title_only = True
 
             log.info("summarizing %s", link)
             _status[feed_id] = f"Summarizing {i}/{total}"
@@ -299,11 +301,12 @@ def poll_feed(feed_id: int) -> bool:
                 conn.execute(
                     "INSERT OR IGNORE INTO items(feed_id, guid, link, original_title, "
                     "published_at, headline, summary, fallback, word_count, auth, "
-                    "fetch_status, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "fetch_status, text, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         feed_id, guid, link or "", original_title, _published_at(entry),
-                        headline, summary, fallback, words, auth, fetch_status, now(),
+                        headline, summary, fallback, words, auth, fetch_status,
+                        None if title_only else text, now(),
                     ),
                 )
 
@@ -370,8 +373,8 @@ def retry_fallback(feed_id: int) -> None:
                 # a row pruned meanwhile is a harmless no-op
                 conn.execute(
                     "UPDATE items SET headline = ?, summary = ?, fallback = 0, auth = ?, "
-                    "word_count = ?, fetch_status = ? WHERE id = ?",
-                    (headline, summary, auth, words, fetch_status, item_id),
+                    "word_count = ?, fetch_status = ?, text = ? WHERE id = ?",
+                    (headline, summary, auth, words, fetch_status, text, item_id),
                 )
     finally:
         _status.pop(feed_id, None)

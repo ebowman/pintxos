@@ -153,6 +153,10 @@ def test_items_has_fetch_status_column(db):
     assert "fetch_status" in {r["name"] for r in db.execute("PRAGMA table_info(items)")}
 
 
+def test_items_has_text_column(db):
+    assert "text" in {r["name"] for r in db.execute("PRAGMA table_info(items)")}
+
+
 def test_connect_migrates_existing_db_missing_items_word_count_and_auth_columns(
     tmp_path, monkeypatch
 ):
@@ -213,5 +217,62 @@ def test_connect_migrates_existing_db_missing_items_word_count_and_auth_columns(
         assert row["word_count"] is None  # not fetched/summarized -> no stats yet
         assert row["auth"] is None
         assert row["fetch_status"] is None  # pre-existing rows stay NULL
+    finally:
+        conn2.close()
+
+
+def test_connect_migrates_existing_db_missing_items_text_column(tmp_path, monkeypatch):
+    """A DB from before the text column gains it on connect(), and only once."""
+    monkeypatch.setenv("PINTXOS_DATA_DIR", str(tmp_path))
+    old_conn = sqlite3.connect(db_path())
+    old_conn.executescript(
+        """
+        CREATE TABLE feeds (
+            id INTEGER PRIMARY KEY,
+            url TEXT UNIQUE NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            last_polled_at TEXT,
+            last_error TEXT
+        );
+        CREATE TABLE items (
+            id INTEGER PRIMARY KEY,
+            feed_id INTEGER REFERENCES feeds(id) ON DELETE CASCADE,
+            guid TEXT NOT NULL,
+            link TEXT NOT NULL,
+            original_title TEXT,
+            published_at TEXT,
+            headline TEXT,
+            summary TEXT,
+            fallback INTEGER DEFAULT 0,
+            word_count INTEGER,
+            auth TEXT,
+            fetch_status TEXT,
+            created_at TEXT,
+            UNIQUE(feed_id, guid)
+        );
+        """
+    )
+    old_conn.commit()
+    old_conn.close()
+
+    conn = connect()
+    try:
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
+        assert cols.count("text") == 1
+        assert "text" in cols
+    finally:
+        conn.close()
+
+    # Second connect() must be a no-op migration, not an error, and the column stays singular.
+    conn2 = connect()
+    try:
+        cols2 = [r["name"] for r in conn2.execute("PRAGMA table_info(items)")]
+        assert cols2.count("text") == 1
+
+        feed_id = add_feed(conn2)
+        item_id = add_item(conn2, feed_id)
+        row = conn2.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+        assert row["text"] is None  # pre-existing rows stay NULL
     finally:
         conn2.close()

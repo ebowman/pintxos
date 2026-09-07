@@ -18,6 +18,8 @@ DEFAULTS: dict[str, str | None] = {
     "PINTXOS_AD_KEEP_PATTERNS": "",
     # Append the extracted article text after each summary in the output feed.
     "PINTXOS_FULL_TEXT": "1",
+    # Force the summarizer to keep the article's own language instead of English.
+    "PINTXOS_RESPECT_LANGUAGE": "1",
     # These two are environment-only (like PINTXOS_DATA_DIR): read directly by
     # pintxos/cli.py before the app/DB is touched, never via get_setting().
     "PINTXOS_HOST": "127.0.0.1",

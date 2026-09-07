@@ -35,6 +35,37 @@ def test_add_feed_appears_in_list(monkeypatch):
         assert "/feeds/1.xml" in page
 
 
+def test_index_shows_feed_count_in_heading(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        page = c.get("/").text
+        assert '<h1>Feeds (<span id="feed-count">0</span>)</h1>' in page
+
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/").text
+        assert '<h1>Feeds (<span id="feed-count">1</span>)</h1>' in page
+
+
+def test_index_search_box_has_no_match_row_and_non_url_input(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        page = c.get("/").text
+        assert "No feeds match." in page
+        assert 'type="url"' not in page
+        assert 'id="feed-search"' in page
+        assert 'name="url"' in page
+        assert "required" not in page.split('id="feed-search"')[1].split(">")[0]
+
+
+def test_index_add_button_starts_disabled(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        page = c.get("/").text
+        form = page.split('<form class="add-form"')[1].split("</form>")[0]
+        button = [line for line in form.split("<button") if "submit" in line][0]
+        assert "disabled" in button
+
+
 def test_add_feed_triggers_exactly_one_poll(monkeypatch):
     calls = []
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: calls.append(feed_id))

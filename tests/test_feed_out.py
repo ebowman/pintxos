@@ -218,3 +218,74 @@ def test_feed_xml_stats_line_precedes_original_line():
     parsed = feedparser.parse(resp.content)
     entry = next(e for e in parsed.entries if e.title == "Headline One")
     assert entry.description.index("min read") < entry.description.index("Original:")
+
+
+FULL_TEXT_SAMPLE = "AT&T said 1 < 2\n\nSecond para"
+
+
+def _seed_with_text(text):
+    with db() as conn:
+        feed_id = conn.execute(
+            "INSERT INTO feeds(url, title, created_at) VALUES (?, ?, ?)",
+            (FEED_URL, "Example Feed", now()),
+        ).lastrowid
+        conn.execute(
+            """INSERT INTO items
+            (feed_id, guid, link, original_title, published_at, headline, summary, fallback, text, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                feed_id,
+                "guid-text",
+                "https://example.com/text",
+                "Original Text",
+                "2026-09-04T12:00:00+00:00",
+                "Headline Text",
+                "Summary text.",
+                0,
+                text,
+                now(),
+            ),
+        )
+    return feed_id
+
+
+def test_feed_xml_full_text_appends_marker_and_paragraphs():
+    feed_id = _seed_with_text(FULL_TEXT_SAMPLE)
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    # feedparser normalises HTML entities in entry.description, so assert on the
+    # XML-unescaped raw response body instead (this project's RSS <description>
+    # embeds HTML as escaped text, not CDATA).
+    import xml.sax.saxutils
+
+    raw = xml.sax.saxutils.unescape(resp.text)
+    assert "Original: Original Text" in raw
+    assert "=== FULL TEXT BELOW ===" in raw
+    assert raw.index("Original:") < raw.index("=== FULL TEXT BELOW ===")
+    assert "AT&amp;T said 1 &lt; 2" in raw
+    assert (
+        "<p>AT&amp;T said 1 &lt; 2</p><p>Second para</p>" in raw
+    )  # blank-line paragraph break becomes two contiguous <p> tags, no empty <p></p>
+
+
+def test_feed_xml_full_text_off_has_no_marker(monkeypatch):
+    monkeypatch.setenv("PINTXOS_FULL_TEXT", "0")
+    feed_id = _seed_with_text(FULL_TEXT_SAMPLE)
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    parsed = feedparser.parse(resp.content)
+    entry = next(e for e in parsed.entries if e.title == "Headline Text")
+    assert "=== FULL TEXT BELOW ===" not in entry.description
+    assert entry.description.rstrip().endswith("Original: Original Text</p>")
+
+
+def test_feed_xml_full_text_null_has_no_marker():
+    feed_id = _seed_with_text(None)
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    parsed = feedparser.parse(resp.content)
+    entry = next(e for e in parsed.entries if e.title == "Headline Text")
+    assert "=== FULL TEXT BELOW ===" not in entry.description

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import sqlite3
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
@@ -32,7 +33,7 @@ _FETCH_NOTES = {
 
 
 def render_rss(
-    feed: sqlite3.Row, items: Sequence[sqlite3.Row]
+    feed: sqlite3.Row, items: Sequence[sqlite3.Row], *, full_text: bool = True
 ) -> bytes:
     """Render a feed and its items as RSS 2.0 XML bytes."""
     rss = ET.Element("rss", {"version": "2.0"})
@@ -70,6 +71,11 @@ def render_rss(
                     "<p><em>Note: article fetch failed; summarized from feed excerpt.</em></p>"
                 )
         description += f"<p>Original: {item['original_title']}</p>"
+        if full_text and item["text"]:
+            description += "<p>=== FULL TEXT BELOW ===</p>"
+            for line in item["text"].splitlines():
+                if line.strip():
+                    description += f"<p>{html.escape(line)}</p>"
         ET.SubElement(entry, "description").text = description
 
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)

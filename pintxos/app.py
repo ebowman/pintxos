@@ -115,7 +115,8 @@ def feed_xml(feed_id: int) -> Response:
             "SELECT * FROM items WHERE feed_id = ? ORDER BY published_at DESC, id DESC",
             (feed_id,),
         ).fetchall()
-        body = render_rss(feed, items)
+        full_text = is_truthy(get_setting("PINTXOS_FULL_TEXT", conn))
+        body = render_rss(feed, items, full_text=full_text)
     return Response(content=body, media_type="application/rss+xml; charset=utf-8")
 
 

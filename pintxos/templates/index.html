@@ -37,9 +37,8 @@
     <tbody>
       {% for feed in feeds %}
       {% include "_feed_row.html" %}
-      {% else %}
-      <tr><td colspan="6" class="empty">No feeds yet — add one above.</td></tr>
       {% endfor %}
+      <tr id="feed-empty"{% if feeds %} hidden{% endif %}><td colspan="6" class="empty">No feeds yet — add one above.</td></tr>
       <tr id="feed-no-match" hidden><td colspan="6" class="empty">No feeds match.</td></tr>
     </tbody>
   </table>
@@ -89,6 +88,8 @@
     }
     var noMatch = document.getElementById("feed-no-match");
     if (noMatch) { noMatch.hidden = !(total > 0 && visible === 0 && v !== ""); }
+    var empty = document.getElementById("feed-empty");
+    if (empty) { empty.hidden = total !== 0; }
     var countEl = document.getElementById("feed-count");
     if (countEl) { countEl.textContent = v === "" ? String(total) : (visible + " of " + total); }
     var form = input.closest("form");

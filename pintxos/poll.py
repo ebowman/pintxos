@@ -383,9 +383,16 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
     if only_blocked:
         # NULL: rows from before the column existed; one attempt gives them a real status.
         sql += " AND (fetch_status = 'blocked' OR fetch_status IS NULL)"
-    if limit is not None:
+    if only_blocked:
+        # The SQL LIMIT is skipped so we can filter by cookie coverage in Python first,
+        # then truncate -- otherwise a host with no cookies could crowd out the limit
+        # with items that have no chance of succeeding.
+        sql += " ORDER BY id DESC"
+    elif limit is not None:
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
+
+    jar = get_jar()
     with db() as conn:
         rows = conn.execute(sql, params).fetchall()
         feed_row = conn.execute(
@@ -398,7 +405,11 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
             else is_truthy(get_setting("PINTXOS_RESPECT_LANGUAGE", conn))
         )
 
-    jar = get_jar()
+    if only_blocked:
+        rows = [row for row in rows if jar is not None and has_cookies_for(jar, row["link"])]
+        if limit is not None:
+            rows = rows[:limit]
+
     total = len(rows)
     prev = _status.get(feed_id)
     try:

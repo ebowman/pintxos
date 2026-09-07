@@ -533,6 +533,117 @@ def test_retry_fallback_failure_leaves_text_unchanged(feed_id, monkeypatch):
     assert rows[0]["text"] == "original text"
 
 
+def _seed_blocked_items(feed_id, n, start_guid=1):
+    """Insert `n` blocked fallback rows, oldest guid first; returns their ids in insert order."""
+    ids = []
+    for i in range(start_guid, start_guid + n):
+        item_id = _seed_fallback_item(feed_id, guid=f"blocked-{i}", link=f"https://example.com/b{i}")
+        with db() as conn:
+            conn.execute("UPDATE items SET fetch_status = 'blocked' WHERE id = ?", (item_id,))
+        ids.append(item_id)
+    return ids
+
+
+def _mark_sample_guids_seen(feed_id):
+    """Insert rows for every SAMPLE guid so a poll of that fixture finds no new entries."""
+    with db() as conn:
+        for guid in ["https://example.com/one", "https://example.com/two", "https://example.com/three"]:
+            conn.execute(
+                "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
+                "headline, summary, fallback, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (feed_id, guid, guid, guid, now(), "h", "s", 0, now()),
+            )
+
+
+def test_poll_feed_retries_three_newest_blocked_items(feed_id, calls, monkeypatch):
+    """On a normal poll, only the three newest blocked-or-NULL fallback rows are
+    retried; the rest, and a teaser row, are left untouched. A NULL fetch_status
+    (an item written before that column existed) counts as retriable, same as
+    'blocked'."""
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+    blocked_ids = _seed_blocked_items(feed_id, 5)
+    # The newest blocked row instead has no fetch_status at all (pre-migration row).
+    null_status_id = blocked_ids[-1]
+    with db() as conn:
+        conn.execute("UPDATE items SET fetch_status = NULL WHERE id = ?", (null_status_id,))
+    teaser_id = _seed_fallback_item(feed_id, guid="teaser-1", link="https://example.com/t1")
+    with db() as conn:
+        conn.execute("UPDATE items SET fetch_status = 'teaser' WHERE id = ?", (teaser_id,))
+    _mark_sample_guids_seen(feed_id)
+
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
+
+    assert poll.poll_feed(feed_id) is True
+
+    rows = {row["id"]: row for row in items()}
+    retried_ids = set(blocked_ids[-3:])  # three newest (highest id) rows, incl. the NULL one
+    assert null_status_id in retried_ids
+    for item_id in blocked_ids:
+        row = rows[item_id]
+        if item_id in retried_ids:
+            assert row["fallback"] == 0
+            assert row["fetch_status"] == "ok"
+        else:
+            assert row["fallback"] == 1
+            assert row["fetch_status"] == "blocked"
+    assert rows[teaser_id]["fallback"] == 1
+    assert rows[teaser_id]["fetch_status"] == "teaser"
+
+
+def test_poll_feed_does_not_retry_blocked_items_without_cookies(feed_id, calls, monkeypatch):
+    """No cookies.txt means get_jar() is None: poll_feed must skip the blocked retry."""
+    blocked_ids = _seed_blocked_items(feed_id, 5)
+    _mark_sample_guids_seen(feed_id)
+
+    def boom_fetch_article(link):
+        raise AssertionError("fetch_article should not be called: no cookies means no retry")
+
+    monkeypatch.setattr(poll, "fetch_article", boom_fetch_article)
+
+    assert poll.poll_feed(feed_id) is True
+
+    rows = {row["id"]: row for row in items()}
+    for item_id in blocked_ids:
+        assert rows[item_id]["fallback"] == 1
+        assert rows[item_id]["fetch_status"] == "blocked"
+
+
+def test_retry_fallback_button_path_still_retries_all_blocked_items(feed_id, monkeypatch):
+    """The manual retry-fallback button calls retry_fallback with no limit/only_blocked,
+    so it must still retry every fallback row regardless of fetch_status."""
+    blocked_ids = _seed_blocked_items(feed_id, 5)
+    teaser_id = _seed_fallback_item(feed_id, guid="teaser-1", link="https://example.com/t1")
+    with db() as conn:
+        conn.execute("UPDATE items SET fetch_status = 'teaser' WHERE id = ?", (teaser_id,))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
+
+    poll.retry_fallback(feed_id)
+
+    rows = {row["id"]: row for row in items()}
+    for item_id in blocked_ids + [teaser_id]:
+        assert rows[item_id]["fallback"] == 0
+        assert rows[item_id]["fetch_status"] == "ok"
+
+
+def test_retry_fallback_restores_callers_status_instead_of_popping(feed_id, monkeypatch):
+    """When retry_fallback is invoked with a status already set for this feed (as
+    poll_feed does), it must restore that status afterwards rather than popping it,
+    so the caller's own status survives the nested call."""
+    _seed_blocked_items(feed_id, 1)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
+
+    poll._status[feed_id] = "Summarizing 2/3"
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    assert poll._status[feed_id] == "Summarizing 2/3"
+
+    poll._status.pop(feed_id, None)
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    assert feed_id not in poll._status
+
+
 def test_ui_can_write_while_polling(feed_id, calls, monkeypatch):
     """A second writer (the web UI) must not hit 'database is locked' mid-poll."""
     import sqlite3

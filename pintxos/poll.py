@@ -65,6 +65,7 @@ _status: dict[int, str] = {}
 _CHALLENGE_ATTEMPTS = 3
 _HOST_PAUSE = 2.0
 _last_request: dict[str, float] = {}
+_BLOCKED_RETRIES = 3
 
 
 def _get(url: str) -> curl_cffi.requests.Response:
@@ -349,6 +350,11 @@ def poll_feed(feed_id: int) -> bool:
                     ),
                 )
 
+        if jar is not None:
+            # ponytail: three blocked items per poll; ceiling: a site that blocks
+            # everything costs three fetches per poll, no summary calls.
+            retry_fallback(feed_id, limit=_BLOCKED_RETRIES, only_blocked=True)
+
         with db() as conn:
             conn.execute(
                 "DELETE FROM items WHERE feed_id = ? AND id NOT IN "
@@ -366,13 +372,18 @@ def poll_feed(feed_id: int) -> bool:
         _status.pop(feed_id, None)
 
 
-def retry_fallback(feed_id: int) -> None:
+def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = False) -> None:
     """Re-fetch and re-summarize this feed's fallback items in place; never deletes."""
+    sql = "SELECT id, link, original_title FROM items WHERE feed_id = ? AND fallback = 1"
+    params: list[object] = [feed_id]
+    if only_blocked:
+        # NULL: rows from before the column existed; one attempt gives them a real status.
+        sql += " AND (fetch_status = 'blocked' OR fetch_status IS NULL)"
+    if limit is not None:
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
     with db() as conn:
-        rows = conn.execute(
-            "SELECT id, link, original_title FROM items WHERE feed_id = ? AND fallback = 1",
-            (feed_id,),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
         feed_row = conn.execute(
             "SELECT respect_language FROM feeds WHERE id = ?", (feed_id,)
         ).fetchone()
@@ -385,6 +396,7 @@ def retry_fallback(feed_id: int) -> None:
 
     jar = get_jar()
     total = len(rows)
+    prev = _status.get(feed_id)
     try:
         for i, row in enumerate(rows, 1):
             item_id, link, original_title = row["id"], row["link"], row["original_title"]
@@ -427,7 +439,10 @@ def retry_fallback(feed_id: int) -> None:
                     (headline, summary, auth, words, fetch_status, text, item_id),
                 )
     finally:
-        _status.pop(feed_id, None)
+        if prev is None:
+            _status.pop(feed_id, None)
+        else:
+            _status[feed_id] = prev
 
 
 def retry_one(feed_id: int) -> None:

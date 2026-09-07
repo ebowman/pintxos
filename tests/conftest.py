@@ -14,8 +14,11 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("PINTXOS_NO_SCHEDULER", "1")  # never start a real poller in tests
     # A developer's shell env can pin these; strip them so default-behavior tests
     # (filter off, no extra patterns) aren't at the mercy of the ambient environment.
+    # Also strip the full-text/respect-language toggles for the same reason.
     monkeypatch.delenv("PINTXOS_FILTER_ADS", raising=False)
     monkeypatch.delenv("PINTXOS_AD_TITLE_PATTERNS", raising=False)
+    monkeypatch.delenv("PINTXOS_FULL_TEXT", raising=False)
+    monkeypatch.delenv("PINTXOS_RESPECT_LANGUAGE", raising=False)
 
 
 def write_cookies(text: str) -> None:

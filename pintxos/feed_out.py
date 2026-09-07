@@ -31,6 +31,22 @@ _FETCH_NOTES = {
     ),
 }
 
+_TITLE_NORM_TABLE = str.maketrans(
+    {
+        "‘": "'",
+        "’": "'",
+        "“": '"',
+        "”": '"',
+        "–": "-",
+        "—": "-",
+    }
+)
+
+
+def _norm_title(s: str) -> str:
+    """Normalize a title for loose comparison (whitespace, case, quotes, dashes)."""
+    return " ".join(s.strip().translate(_TITLE_NORM_TABLE).split()).casefold()
+
 
 def render_rss(
     feed: sqlite3.Row, items: Sequence[sqlite3.Row], *, full_text: bool = True
@@ -73,9 +89,16 @@ def render_rss(
         description += f"<p>Original: {item['original_title']}</p>"
         if full_text and item["text"]:
             description += "<p>=== FULL TEXT BELOW ===</p>"
+            norm_original_title = _norm_title(item["original_title"] or "")
+            first_line_seen = False
             for line in item["text"].splitlines():
-                if line.strip():
-                    description += f"<p>{html.escape(line)}</p>"
+                if not line.strip():
+                    continue
+                if not first_line_seen:
+                    first_line_seen = True
+                    if norm_original_title and _norm_title(line) == norm_original_title:
+                        continue
+                description += f"<p>{html.escape(line)}</p>"
         ET.SubElement(entry, "description").text = description
 
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)

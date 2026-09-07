@@ -223,7 +223,7 @@ def test_feed_xml_stats_line_precedes_original_line():
 FULL_TEXT_SAMPLE = "AT&T said 1 < 2\n\nSecond para"
 
 
-def _seed_with_text(text):
+def _seed_with_text(text, title="Original Text"):
     with db() as conn:
         feed_id = conn.execute(
             "INSERT INTO feeds(url, title, created_at) VALUES (?, ?, ?)",
@@ -237,7 +237,7 @@ def _seed_with_text(text):
                 feed_id,
                 "guid-text",
                 "https://example.com/text",
-                "Original Text",
+                title,
                 "2026-09-04T12:00:00+00:00",
                 "Headline Text",
                 "Summary text.",
@@ -289,3 +289,49 @@ def test_feed_xml_full_text_null_has_no_marker():
     parsed = feedparser.parse(resp.content)
     entry = next(e for e in parsed.entries if e.title == "Headline Text")
     assert "=== FULL TEXT BELOW ===" not in entry.description
+
+
+def test_feed_xml_full_text_skips_duplicate_first_line_title():
+    import xml.sax.saxutils
+
+    feed_id = _seed_with_text("Original Text\n\nBody para")
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    raw = xml.sax.saxutils.unescape(resp.text)
+    assert "=== FULL TEXT BELOW ===</p><p>Body para</p>" in raw
+
+
+def test_feed_xml_full_text_skips_duplicate_first_line_title_case_and_whitespace():
+    import xml.sax.saxutils
+
+    feed_id = _seed_with_text("original  text\n\nBody para")
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    raw = xml.sax.saxutils.unescape(resp.text)
+    assert "=== FULL TEXT BELOW ===</p><p>Body para</p>" in raw
+
+
+def test_feed_xml_full_text_skips_duplicate_first_line_title_curly_quotes():
+    import xml.sax.saxutils
+
+    feed_id = _seed_with_text("It’s Original Text\n\nBody para", title="It's Original Text")
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    raw = xml.sax.saxutils.unescape(resp.text)
+    assert "=== FULL TEXT BELOW ===</p><p>Body para</p>" in raw
+
+
+def test_feed_xml_full_text_keeps_first_line_when_not_a_duplicate():
+    import xml.sax.saxutils
+
+    feed_id = _seed_with_text("Different first line\n\nOriginal Text")
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    raw = xml.sax.saxutils.unescape(resp.text)
+    assert (
+        "=== FULL TEXT BELOW ===</p><p>Different first line</p><p>Original Text</p>" in raw
+    )

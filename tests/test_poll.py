@@ -28,10 +28,12 @@ WIRED = (Path(__file__).parent / "fixtures" / "wired.xml").read_bytes()
 
 
 class FakeResponse:
-    def __init__(self, content: bytes, status_code: int = 200, content_type="application/xml"):
+    def __init__(
+        self, content: bytes, status_code: int = 200, content_type="application/xml", headers=None
+    ):
         self.content = content
         self.status_code = status_code
-        self.headers = {"content-type": content_type}
+        self.headers = headers if headers is not None else {"content-type": content_type}
 
     @property
     def text(self) -> str:
@@ -933,10 +935,10 @@ def test_make_client_impersonation(profile, expect_impersonate, expect_pintxos_u
 def _reset_client_jar(monkeypatch):
     """Cookie-jar tests must not leak the installed jar across test order."""
     monkeypatch.setattr(poll, "_client_jar", None)
-    poll._client.cookies = curl_cffi.requests.Cookies()
+    poll._clients[0].cookies = curl_cffi.requests.Cookies()
     yield
     poll._client_jar = None
-    poll._client.cookies = curl_cffi.requests.Cookies()
+    poll._clients[0].cookies = curl_cffi.requests.Cookies()
 
 
 def test_get_installs_jar_on_client_and_clears_it_when_file_removed(_reset_client_jar, monkeypatch):
@@ -945,21 +947,123 @@ def test_get_installs_jar_on_client_and_clears_it_when_file_removed(_reset_clien
     def fake(url):
         return FakeResponse(b"<html>ok</html>", content_type="text/html")
 
-    monkeypatch.setattr(poll._client, "get", fake)
+    monkeypatch.setattr(poll._clients[0], "get", fake)
 
     poll._get("https://www.example.com/a")
 
-    assert poll._client.cookies.get("sid", domain=".example.com") == "abc"
-    installed_jar = poll._client.cookies.jar
+    assert poll._clients[0].cookies.get("sid", domain=".example.com") == "abc"
+    installed_jar = poll._clients[0].cookies.jar
 
     # Cookies file is unchanged, so the second call must not reinstall the jar.
     poll._get("https://www.example.com/a")
-    assert poll._client.cookies.jar is installed_jar
+    assert poll._clients[0].cookies.jar is installed_jar
 
     cookie_path().unlink()
 
     poll._get("https://www.example.com/a")
-    assert len(poll._client.cookies) == 0
+    assert len(poll._clients[0].cookies) == 0
+
+
+# --- Cloudflare challenge retry across profiles ------------------------------------
+
+
+class FakeClient:
+    """Stands in for a curl_cffi Session: returns responses from a scripted list."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def get(self, url):
+        resp = self._responses[self.calls]
+        self.calls += 1
+        return resp
+
+
+def _challenge_response():
+    return FakeResponse(b"", status_code=403, headers={"cf-mitigated": "challenge"})
+
+
+def _plain_403_response():
+    return FakeResponse(b"", status_code=403)
+
+
+def _ok_response():
+    return FakeResponse(b"<html>ok</html>", content_type="text/html")
+
+
+def test_get_retries_challenge_then_succeeds(_reset_client_jar, monkeypatch):
+    fake = FakeClient([_challenge_response(), _ok_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    sleeps = []
+    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp.status_code == 200
+    assert sleeps == [poll._CHALLENGE_PAUSE]
+
+
+def test_get_gives_up_after_all_challenge_attempts(_reset_client_jar, monkeypatch):
+    responses = [_challenge_response(), _challenge_response(), _challenge_response()]
+    fake = FakeClient(responses)
+    monkeypatch.setattr(poll, "_clients", [fake])
+    sleeps = []
+    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp is responses[-1]
+    assert sleeps == [poll._CHALLENGE_PAUSE, poll._CHALLENGE_PAUSE]
+
+
+def test_get_gives_up_after_all_challenge_attempts_reports_blocked(_reset_client_jar, monkeypatch):
+    fake = FakeClient([_challenge_response(), _challenge_response(), _challenge_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    monkeypatch.setattr(poll.time, "sleep", lambda s: None)
+
+    text, status = poll.fetch_article("https://example.com/a")
+
+    assert text is None
+    assert status == "blocked"
+
+
+def test_get_retries_second_attempt_on_next_profile(_reset_client_jar, monkeypatch):
+    client1 = FakeClient([_challenge_response(), _ok_response()])
+    client2 = FakeClient([_ok_response()])
+    monkeypatch.setattr(poll, "_clients", [client1, client2])
+    monkeypatch.setattr(poll.time, "sleep", lambda s: None)
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp.status_code == 200
+    assert client1.calls == 1
+    assert client2.calls == 1
+
+
+def test_get_plain_403_returns_immediately_without_retry(_reset_client_jar, monkeypatch):
+    fake = FakeClient([_plain_403_response(), _ok_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    sleeps = []
+    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp.status_code == 403
+    assert fake.calls == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("a, b", ["a", "b"]),
+        ("", [""]),
+        ("safari17_0", ["safari17_0"]),
+    ],
+)
+def test_parse_profiles(value, expected):
+    assert poll._parse_profiles(value) == expected
 
 
 def test_cookies_only_sent_to_matching_domain_and_zero_expiry_is_a_session_cookie():

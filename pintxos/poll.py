@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from http.cookiejar import MozillaCookieJar
 
@@ -38,21 +39,30 @@ def _make_client(profile: str | None) -> curl_cffi.requests.Session:
     )
 
 
-# ponytail: one shared client and one scheduler at module level. The scheduler runs a
-# single worker thread, so every poll - scheduled or manual - is serialized by
-# construction; ceiling is multi-process deployments (each process would poll).
-# PINTXOS_IMPERSONATE is environment-only (see config.DEFAULTS), read directly from
-# the environment here rather than via get_setting so building the client at import
-# time never touches the DB.
-_client = _make_client(os.environ.get("PINTXOS_IMPERSONATE", DEFAULTS["PINTXOS_IMPERSONATE"]))
+def _parse_profiles(value: str) -> list[str]:
+    """Split a comma-separated PINTXOS_IMPERSONATE value into profiles; "" means none."""
+    return [p.strip() for p in value.split(",")] if value else [""]
+
+
+# ponytail: one shared client per profile and one scheduler at module level. The
+# scheduler runs a single worker thread, so every poll - scheduled or manual - is
+# serialized by construction; ceiling is multi-process deployments (each process would
+# poll). PINTXOS_IMPERSONATE is environment-only (see config.DEFAULTS), read directly
+# from the environment here rather than via get_setting so building the clients at
+# import time never touches the DB.
+_profiles = _parse_profiles(os.environ.get("PINTXOS_IMPERSONATE", DEFAULTS["PINTXOS_IMPERSONATE"]))
+_clients = [_make_client(p or None) for p in _profiles]
 scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
 
-# Which jar object (if any) is currently installed on `_client.cookies`. Compared by
+# Which jar object (if any) is currently installed on the clients' cookies. Compared by
 # identity against get_jar()'s return value so we only reinstall when it changes.
 _client_jar: MozillaCookieJar | None = None
 
 # What each feed is doing right now, for the UI. In-memory: single process, dies with it.
 _status: dict[int, str] = {}
+
+_CHALLENGE_ATTEMPTS = 3
+_CHALLENGE_PAUSE = 2.0
 
 
 def _get(url: str) -> curl_cffi.requests.Response:
@@ -60,13 +70,24 @@ def _get(url: str) -> curl_cffi.requests.Response:
     global _client_jar
     jar = get_jar()
     if jar is not _client_jar:
-        # ponytail: jar installed on the shared session, swapped on identity; ceiling:
-        # response cookies live only in memory.
-        _client.cookies = (
+        # ponytail: jar installed on every shared session, swapped on identity;
+        # ceiling: response cookies live only in memory.
+        cookies = (
             curl_cffi.requests.Cookies(jar) if jar is not None else curl_cffi.requests.Cookies()
         )
+        for client in _clients:
+            client.cookies = cookies
         _client_jar = jar
-    return _client.get(url)
+
+    # A challenge is probabilistic per request; retry across the profile list.
+    for attempt in range(_CHALLENGE_ATTEMPTS):
+        resp = _clients[attempt % len(_clients)].get(url)
+        if resp.status_code != 403 or resp.headers.get("cf-mitigated") != "challenge":
+            return resp
+        if attempt + 1 < _CHALLENGE_ATTEMPTS:
+            log.info("cloudflare challenge on %s, retrying", url)
+            time.sleep(_CHALLENGE_PAUSE)
+    return resp
 
 
 def fetch_article(link: str) -> tuple[str | None, str]:

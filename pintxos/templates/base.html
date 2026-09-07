@@ -55,6 +55,7 @@
     @media (max-width: 600px) { .phone-hide, table .url { display: none; } }
     tbody tr:hover { background: var(--surface); }
     tbody tr:last-child td { border-bottom: none; }
+    tbody tr:has(+ #feed-no-match) td { border-bottom: none; }
     td.nowrap { white-space: nowrap; }
     /* Three action buttons on one line, right-aligned. nowrap means they can never break into two rows. */
     td.actions { white-space: nowrap; text-align: right; }
@@ -120,6 +121,7 @@
     button:disabled { opacity: .7; cursor: default; }
     .btn-primary { color: #ffffff; background: #3f5fd8; border-color: #3f5fd8; }
     .btn-primary:hover { background: #3151c9; border-color: #3151c9; }
+    .btn-primary:disabled { background: #b8c0d6; border-color: #b8c0d6; }
     .btn-tint-accent { color: #3151c9; background: #eef2ff; border-color: #d6ddfb; }
     .btn-tint-accent:hover { background: #e0e7ff; border-color: #c3cdf7; }
     .btn-tint-neutral { color: var(--text); background: var(--surface); border-color: var(--border); }

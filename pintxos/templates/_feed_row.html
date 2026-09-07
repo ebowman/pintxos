@@ -1,3 +1,4 @@
+{#- Icons: Feather Icons (MIT), copied verbatim; license in docs/licenses/feather-icons-LICENSE.txt -#}
 {#- One feed row. Rendered inside the index table and, on its own, by GET /feeds/{id}/row
     so the page can swap a single row in place. Variables: feed, status. -#}
 <tr id="feed-{{ feed.id }}" data-feed-id="{{ feed.id }}">
@@ -5,7 +6,7 @@
     <div>{{ feed.title or feed.url }}</div>
     <div class="muted url">{{ feed.url }}</div>
   </td>
-  <td class="output"><div class="output-wrap"><span class="output-url" title="{{ feed.output_url }}">{{ feed.output_url }}</span><button type="button" class="btn-tint-accent btn-copy" onclick="pintxosCopy(this, '{{ feed.output_url }}')">Copy</button></div></td>
+  <td class="output"><div class="output-wrap"><span class="output-url" title="{{ feed.output_url }}">{{ feed.output_url }}</span><button type="button" class="btn-tint-accent btn-copy" onclick="pintxosCopy(this, '{{ feed.output_url }}')" aria-label="Copy output URL" title="Copy output URL"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico ico-done" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span class="label">Copy</span></button></div></td>
   <td>
     <div>{{ feed.item_count }}</div>
     <div class="muted">{% if feed.ads_filtered %}{{ feed.ads_filtered }} ad{{ "" if feed.ads_filtered == 1 else "s" }} skipped{% endif %}</div>
@@ -16,17 +17,17 @@
     {% with fetch_status=feed.fetch_status %}{% include "_fetch_status.html" %}{% endwith %}
   </td>
   <td class="actions">
-    <form method="get" action="/feeds/{{ feed.id }}"><button type="submit" class="btn-tint-neutral">Edit filters</button></form>
+    <form method="get" action="/feeds/{{ feed.id }}"><button type="submit" class="btn-tint-neutral" aria-label="Edit filters" title="Edit filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg><span class="label">Edit filters</span></button></form>
     {#- The poll button carries the poll state: idle / active (pulse, progress in tooltip) / failed (error in tooltip). #}
     <form method="post" action="/feeds/{{ feed.id }}/poll">
       {%- if feed.id in status -%}
-      <button type="submit" class="btn-poll btn-polling" disabled data-feed-id="{{ feed.id }}" title="{{ status[feed.id] }}">Polling…</button>
+      <button type="submit" class="btn-poll btn-polling" disabled data-feed-id="{{ feed.id }}" aria-label="Poll now" title="{{ status[feed.id] }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span class="label">Polling…</span></button>
       {%- elif feed.last_error -%}
-      <button type="submit" class="btn-poll btn-danger" title="{{ feed.last_error }}">Failed</button>
+      <button type="submit" class="btn-poll btn-danger" aria-label="Poll now" title="{{ feed.last_error }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span class="label">Failed</span></button>
       {%- else -%}
-      <button type="submit" class="btn-poll btn-tint-neutral">Poll now</button>
+      <button type="submit" class="btn-poll btn-tint-neutral" aria-label="Poll now" title="Poll now"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span class="label">Poll now</span></button>
       {%- endif -%}
     </form>
-    <form method="post" action="/feeds/{{ feed.id }}/delete" onsubmit="return confirm('Delete feed?')"><button type="submit" class="btn-danger">Delete</button></form>
+    <form method="post" action="/feeds/{{ feed.id }}/delete" onsubmit="return confirm('Delete feed?')"><button type="submit" class="btn-danger" aria-label="Delete feed" title="Delete feed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg><span class="label">Delete</span></button></form>
   </td>
 </tr>

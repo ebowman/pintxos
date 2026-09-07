@@ -7,6 +7,7 @@ import os
 import re
 import stat
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -158,6 +159,11 @@ def _titles(html: str) -> list[str]:
     return re.findall(r'title="([^"]*)"', html)
 
 
+def _label(text: str) -> str:
+    """The <span class="label">text</span> closing fragment for a table button's visible text."""
+    return ">" + text + "</span>"
+
+
 def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
     """Poll progress does not live in the Status column: the poll button itself reads
     Polling… (disabled, progress in the tooltip, page polls /status in place), Failed
@@ -173,7 +179,7 @@ def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
         assert "location.reload" not in page
         assert 'fetch("/status")' in page
         btn = _poll_button(page)
-        assert ">Polling…<" in btn
+        assert _label("Polling…") in btn
         assert "disabled" in btn
         assert 'title="Summarizing 2/5"' in btn
         assert "btn-polling" in btn
@@ -188,9 +194,9 @@ def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
         assert "location.reload" not in page
         assert 'fetch("/status")' in page
         btn = _poll_button(page)
-        assert ">Poll now<" in btn
+        assert _label("Poll now") in btn
         assert "disabled" not in btn
-        assert "title=" not in btn
+        assert 'title="Poll now"' in btn
         assert "btn-tint-neutral" in btn
         assert "btn-polling" not in btn
 
@@ -199,7 +205,7 @@ def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
             conn.execute('UPDATE feeds SET last_error = ? WHERE id = 1', ('HTTP 500: "boom"',))
         page = c.get("/").text
         btn = _poll_button(page)
-        assert ">Failed<" in btn
+        assert _label("Failed") in btn
         assert "disabled" not in btn
         assert "btn-danger" in btn
         assert 'title="HTTP 500: &#34;boom&#34;"' in btn
@@ -208,7 +214,7 @@ def test_poll_button_carries_poll_state_and_refresh(monkeypatch):
         # active wins over a stale last_error
         monkeypatch.setattr(app_module, "poll_status", {1: "Fetching"})
         btn = _poll_button(c.get("/").text)
-        assert ">Polling…<" in btn and 'title="Fetching"' in btn and "btn-danger" not in btn
+        assert _label("Polling…") in btn and 'title="Fetching"' in btn and "btn-danger" not in btn
 
         page = c.get("/?err=Oops").text
         assert 'class="flash"' in page
@@ -242,7 +248,7 @@ def test_feed_row_endpoint_returns_just_the_row(monkeypatch):
     assert "<html" not in body and "<table" not in body
     assert 'id="feed-1"' in body
     assert "/feeds/1.xml" in body
-    assert ">Poll now<" in body
+    assert _label("Poll now") in body
 
 
 def test_feed_row_endpoint_404_for_unknown_feed(monkeypatch):
@@ -259,7 +265,7 @@ def test_feed_row_endpoint_reflects_poll_status(monkeypatch):
         body = c.get("/feeds/1/row").text
 
     btn = _poll_button(body)
-    assert ">Polling…<" in btn
+    assert _label("Polling…") in btn
     assert "disabled" in btn
     assert 'title="Summarizing 1/2"' in btn
     assert 'data-feed-id="1"' in btn
@@ -892,7 +898,7 @@ def test_index_copy_sits_inside_output_url_cell_and_actions_stay_on_one_line(mon
     assert 'class="output-url"' in cell
     assert 'title="http://testserver/feeds/1.xml"' in cell
     assert "pintxosCopy(this, " in cell
-    assert ">Copy<" in cell
+    assert _label("Copy") in cell
     assert cell.index('class="output-url"') < cell.index("pintxosCopy(this, ")
     # One cell, one line: no break and no second cell opens before this one closes.
     assert "<br" not in cell
@@ -910,14 +916,61 @@ def test_index_copy_sits_inside_output_url_cell_and_actions_stay_on_one_line(mon
     start = page.index('<td class="actions">')
     cell = page[start : page.index("</td>", start)]
     assert cell.count("<button") == 3
-    assert ">Copy<" not in cell and "pintxosCopy" not in cell
+    assert _label("Copy") not in cell and "pintxosCopy" not in cell
     assert "actions-row" not in page
-    order = [cell.index(label) for label in (">Edit filters<", ">Poll now<", ">Delete<")]
+    order = [cell.index(_label(label)) for label in ("Edit filters", "Poll now", "Delete")]
     assert order == sorted(order)
     assert page.count("/feeds/1/poll") == 1
 
     # String guard: the rule that keeps the three buttons on one line.
     assert "td.actions { white-space: nowrap;" in page
+
+
+def test_table_buttons_carry_feather_icons_for_narrow_screens(monkeypatch):
+    """At <=720px the four table buttons collapse to icon-only Feather svgs; above that
+    width they stay text buttons (a .label span wraps the visible text either way)."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/").text
+
+    row_start = page.index('<tr id="feed-1"')
+    row_end = page.index("</tr>", row_start) + len("</tr>")
+    row = page[row_start:row_end]
+
+    assert row.count("<svg") == 5
+    for svg_start in (m.start() for m in re.finditer("<svg", row)):
+        svg_tag_end = row.index(">", svg_start)
+        svg_tag = row[svg_start:svg_tag_end]
+        assert 'class="ico' in svg_tag
+        assert 'aria-hidden="true"' in svg_tag
+
+    assert 'aria-label="Copy output URL"' in row
+    assert 'aria-label="Edit filters"' in row
+    assert 'aria-label="Poll now"' in row
+    assert 'aria-label="Delete feed"' in row
+    assert "ico-done" in row
+
+    assert "@media (max-width: 720px)" in page
+    assert "table button .label { display: none; }" in page
+    assert 'querySelector(".label")' in page
+    assert '"copied"' in page
+
+    # Media rules add no specificity, so the override block must come after the base rules
+    # it overrides, or the later base rules win the cascade at equal specificity.
+    label_hidden = page.index("table button .label { display: none; }")
+    assert page.index("table button .ico { display: none;") < label_hidden
+    assert page.index("td.actions .btn-poll { min-width: 5.5rem; }") < label_hidden
+    assert page.index("table button { font-size: 0.75rem; padding: 0.2rem 0.45rem; }") < label_hidden
+
+    license_path = Path(__file__).resolve().parents[1] / "docs" / "licenses" / "feather-icons-LICENSE.txt"
+    assert license_path.exists()
+    license_text = license_path.read_text()
+    assert "MIT License" in license_text
+    assert "Cole Bemis" in license_text
+
+    for bad in ("cdn", "unpkg", "jsdelivr", "fonts.googleapis"):
+        assert bad not in page
 
 
 def test_index_colgroup_widths_sum_to_100_percent(monkeypatch):

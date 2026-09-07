@@ -96,6 +96,21 @@
       cursor: pointer;
     }
     table button { font-size: 0.75rem; padding: 0.2rem 0.45rem; }
+    /* Icons only show at <=720px; on desktop the feedback is the "Copied!" text swap. */
+    table button .ico { display: none; width: 1em; height: 1em; }
+    table button .ico-done { display: none; }
+    /* Media rules add no specificity, so this override block must come after the base rules
+       above (table button, .btn-copy, td.actions .btn-poll, .ico/.ico-done) to win the cascade.
+       Below tablet width the buttons are icon-only and square; the pulse on .btn-polling and the
+       danger tint on failed carry over because they sit on the button element. */
+    @media (max-width: 720px) {
+      table button .label { display: none; }
+      table button .ico { display: inline-block; vertical-align: -0.15em; }
+      table button { padding: 0.3rem; line-height: 1; }
+      .btn-copy, td.actions .btn-poll { min-width: 0; }
+      .btn-copy.copied .ico { display: none; }
+      .btn-copy.copied .ico-done { display: inline-block; }
+    }
     button:hover { border-color: #cdd2d9; background: var(--surface); }
     button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     button:disabled { opacity: .7; cursor: default; }
@@ -192,9 +207,11 @@
       // navigator.clipboard needs https/localhost; plain-http LAN installs get the textarea fallback.
       if (navigator.clipboard) { navigator.clipboard.writeText(text); }
       else { var t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
-      var old = btn.textContent;
-      btn.textContent = "Copied!";
-      setTimeout(function () { btn.textContent = old; }, 1200);
+      var label = btn.querySelector(".label") || btn;
+      var old = label.textContent;
+      label.textContent = "Copied!";
+      btn.classList.add("copied");
+      setTimeout(function () { label.textContent = old; btn.classList.remove("copied"); }, 1200);
     }
     // Flash text lives in ?msg=/?err=; strip it after the first render so reload/back/bookmark stay clean.
     if (/[?&](msg|err)=/.test(location.search)) history.replaceState(null, "", location.pathname);

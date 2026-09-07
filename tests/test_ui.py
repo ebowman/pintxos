@@ -1043,6 +1043,106 @@ def test_feed_edit_post_respect_language_unknown_choice_rejected(monkeypatch):
         assert resp.status_code == 303 and resp.headers["location"].startswith("/feeds/1?err=")
 
 
+def test_feed_edit_page_shows_pencil_and_title_input(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        c.post(
+            "/feeds/1",
+            data={
+                "title": "FT World",
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "ad_title_patterns": "",
+            },
+            follow_redirects=False,
+        )
+        page = c.get("/feeds/1").text
+
+    assert 'aria-label="Edit title"' in page
+    assert 'name="title"' in page
+    assert 'name="title" maxlength="200" value="FT World"' in page
+    assert "<h1" in page and "FT World" in page
+
+
+def test_feed_edit_post_title_saved_and_shown_on_index(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post(
+            "/feeds/1",
+            data={
+                "title": "FT World",
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "ad_title_patterns": "",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/?msg=Saved"
+
+        with db() as conn:
+            row = conn.execute("SELECT title FROM feeds WHERE id = 1").fetchone()
+        assert row["title"] == "FT World"
+
+        page = c.get("/").text
+        assert "FT World" in page
+
+
+def test_feed_edit_post_blank_title_stores_null(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        c.post(
+            "/feeds/1",
+            data={
+                "title": "FT World",
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "ad_title_patterns": "",
+            },
+            follow_redirects=False,
+        )
+        resp = c.post(
+            "/feeds/1",
+            data={
+                "title": "   ",
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "ad_title_patterns": "",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+    with db() as conn:
+        row = conn.execute("SELECT title FROM feeds WHERE id = 1").fetchone()
+    assert row["title"] is None
+
+
+def test_feed_edit_post_title_too_long_rejected_and_unchanged(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post(
+            "/feeds/1",
+            data={
+                "title": "x" * 201,
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "ad_title_patterns": "",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"].startswith("/feeds/1?err=")
+
+        with db() as conn:
+            row = conn.execute("SELECT title FROM feeds WHERE id = 1").fetchone()
+        assert row["title"] is None
+
+
 def test_feed_edit_page_404_for_unknown_feed():
     with TestClient(app) as c:
         resp = c.get("/feeds/999")

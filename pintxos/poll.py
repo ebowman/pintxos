@@ -66,6 +66,13 @@ _client_jar: MozillaCookieJar | None = None
 # What each feed is doing right now, for the UI. In-memory: single process, dies with it.
 _status: dict[int, str] = {}
 
+# ponytail: per-feed offset into the id-DESC candidate list for retry_fallback's
+# only_blocked rotation, so each poll advances past the rows it already retried
+# instead of always retrying the newest ones. In-memory: resets on restart, and the
+# candidate list can shrink between polls as rows heal -- the modulo below keeps the
+# cursor valid either way. Ceiling: persist in the feeds table if that matters.
+_retry_cursor: dict[int, int] = {}
+
 _CHALLENGE_ATTEMPTS = 3
 _HOST_PAUSE = 2.0
 _last_request: dict[str, float] = {}
@@ -382,12 +389,10 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
     params: list[object] = [feed_id]
     if only_blocked:
         # NULL: rows from before the column existed; one attempt gives them a real status.
-        sql += " AND (fetch_status = 'blocked' OR fetch_status IS NULL)"
-    if only_blocked:
         # The SQL LIMIT is skipped so we can filter by cookie coverage in Python first,
         # then truncate -- otherwise a host with no cookies could crowd out the limit
         # with items that have no chance of succeeding.
-        sql += " ORDER BY id DESC"
+        sql += " AND (fetch_status = 'blocked' OR fetch_status IS NULL) ORDER BY id DESC"
     elif limit is not None:
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
@@ -406,9 +411,23 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
         )
 
     if only_blocked:
-        rows = [row for row in rows if jar is not None and has_cookies_for(jar, row["link"])]
-        if limit is not None:
-            rows = rows[:limit]
+        candidates = [
+            row for row in rows if jar is not None and has_cookies_for(jar, row["link"])
+        ]
+        if limit is not None and candidates:
+            # Rotate through the candidates instead of always taking the newest `limit`
+            # of them, so blocked rows past the limit still get a turn on a later poll.
+            # The cursor is taken modulo the current candidate count, which also keeps
+            # it valid when rows heal and drop out of the list between polls.
+            n = len(candidates)
+            start = _retry_cursor.get(feed_id, 0) % n
+            take = min(limit, n)
+            rows = [candidates[(start + k) % n] for k in range(take)]
+            _retry_cursor[feed_id] = (start + take) % n
+        elif limit is not None:
+            rows = candidates[:limit]
+        else:
+            rows = candidates
 
     total = len(rows)
     prev = _status.get(feed_id)

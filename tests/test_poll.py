@@ -87,6 +87,12 @@ def calls_with_ad(monkeypatch):
     return seen
 
 
+@pytest.fixture
+def _reset_retry_cursor(monkeypatch):
+    """Isolate retry_fallback's rotation cursor so test order can't leak state."""
+    monkeypatch.setattr(poll, "_retry_cursor", {})
+
+
 def items():
     with db() as conn:
         return conn.execute("SELECT * FROM items ORDER BY published_at DESC").fetchall()
@@ -557,7 +563,9 @@ def _mark_sample_guids_seen(feed_id):
             )
 
 
-def test_poll_feed_retries_three_newest_blocked_items(feed_id, calls, monkeypatch):
+def test_poll_feed_retries_three_newest_blocked_items(
+    feed_id, calls, monkeypatch, _reset_retry_cursor
+):
     """On a normal poll, only the three newest blocked-or-NULL fallback rows are
     retried; the rest, and a teaser row, are left untouched. A NULL fetch_status
     (an item written before that column existed) counts as retriable, same as
@@ -611,7 +619,9 @@ def test_poll_feed_does_not_retry_blocked_items_without_cookies(feed_id, calls, 
         assert rows[item_id]["fetch_status"] == "blocked"
 
 
-def test_poll_feed_only_retries_blocked_items_on_hosts_with_cookies(feed_id, calls, monkeypatch):
+def test_poll_feed_only_retries_blocked_items_on_hosts_with_cookies(
+    feed_id, calls, monkeypatch, _reset_retry_cursor
+):
     """Only blocked items whose host has cookies in the jar are retried; blocked
     items on a host with no cookies are left untouched even though the jar is not
     empty (it just holds cookies for a different host)."""
@@ -636,6 +646,71 @@ def test_poll_feed_only_retries_blocked_items_on_hosts_with_cookies(feed_id, cal
     for item_id in other_ids:
         assert rows[item_id]["fallback"] == 1
         assert rows[item_id]["fetch_status"] == "blocked"
+
+
+def test_poll_feed_rotates_blocked_item_retries(feed_id, calls, monkeypatch, _reset_retry_cursor):
+    """Across successive polls, retry_fallback rotates through the blocked candidates
+    instead of always retrying the newest `_BLOCKED_RETRIES` rows, so older blocked
+    rows eventually get a turn too. Nothing here ever heals (fetch_article always
+    reports "blocked"), so the candidate list stays the same five rows throughout."""
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+    blocked_ids = _seed_blocked_items(feed_id, 5)
+    _mark_sample_guids_seen(feed_id)
+    # id-DESC candidate order (newest first) -- the same order retry_fallback builds.
+    candidates = list(reversed(blocked_ids))
+    with db() as conn:
+        id_to_link = {
+            row["id"]: row["link"]
+            for row in conn.execute("SELECT id, link FROM items WHERE feed_id = ?", (feed_id,))
+        }
+
+    fetched: list[str] = []
+
+    def fake_fetch_article(link):
+        fetched.append(link)
+        return None, "blocked"
+
+    monkeypatch.setattr(poll, "fetch_article", fake_fetch_article)
+
+    # poll 1 retries positions 0,1,2; poll 2 wraps to 3,4,0; poll 3 continues at 1,2,3.
+    expected_positions = [(0, 1, 2), (3, 4, 0), (1, 2, 3)]
+    for positions in expected_positions:
+        fetched.clear()
+        assert poll.poll_feed(feed_id) is True
+        expected_links = {id_to_link[candidates[p]] for p in positions}
+        assert set(fetched) == expected_links
+        assert len(fetched) == len(expected_links)  # no link repeated within one poll
+
+
+def test_poll_feed_wraps_retries_when_fewer_blocked_items_than_limit(
+    feed_id, calls, monkeypatch, _reset_retry_cursor
+):
+    """When there are fewer blocked candidates than the retry limit, the rotation must
+    not skip or duplicate rows just because the limit doesn't divide the candidate
+    count: each of the two rows is retried exactly once per poll."""
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+    blocked_ids = _seed_blocked_items(feed_id, 2)
+    _mark_sample_guids_seen(feed_id)
+    with db() as conn:
+        id_to_link = {
+            row["id"]: row["link"]
+            for row in conn.execute("SELECT id, link FROM items WHERE feed_id = ?", (feed_id,))
+        }
+    expected_links = {id_to_link[i] for i in blocked_ids}
+
+    fetched: list[str] = []
+
+    def fake_fetch_article(link):
+        fetched.append(link)
+        return None, "blocked"
+
+    monkeypatch.setattr(poll, "fetch_article", fake_fetch_article)
+
+    for _ in range(3):
+        fetched.clear()
+        assert poll.poll_feed(feed_id) is True
+        assert sorted(fetched) == sorted(expected_links)
+        assert len(fetched) == len(expected_links)
 
 
 def test_retry_fallback_button_path_retries_all_hosts_regardless_of_cookies(feed_id, monkeypatch):

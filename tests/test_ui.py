@@ -1325,6 +1325,19 @@ def test_index_empty_state_colspan_matches_columns():
     assert '<td colspan="6" class="empty">' in page
 
 
+def test_index_empty_row_present_but_hidden_when_feeds_exist(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        page = c.get("/").text
+        assert 'id="feed-empty">' in page
+        assert "No feeds yet" in page
+
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/").text
+        assert 'id="feed-empty" hidden>' in page
+        assert "No feeds yet" in page
+
+
 def test_phone_layout_hides_items_last_polled_and_source_url(monkeypatch):
     """At <=600px, Items, Last polled and the source URL collapse; the table still has
     6 <th> and the fixed-layout escape hatch drops its old 640px min-width floor."""

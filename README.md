@@ -170,6 +170,7 @@ to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST`,
 | `PINTXOS_ITEMS_PER_FEED` | `50` | Items kept per output feed (older ones pruned). |
 | `PINTXOS_FILTER_ADS` | `0` | Skip ad/coupon entries before fetch/summarize. Set to `1` to turn this on. |
 | `PINTXOS_FULL_TEXT` | `1` | Append the extracted article text after each summary in the output feed, below the Original line. Set to `0` to turn this off. |
+| `PINTXOS_RESPECT_LANGUAGE` | `1` | Write headline and summary in the article's language. Set to `0` to always summarize in English. Appended full text is never translated. |
 | `PINTXOS_AD_TITLE_PATTERNS` | *(empty)* | Extra title regexes, one per line, matched case-insensitively, in addition to the built-in ad rules. |
 | `PINTXOS_AD_KEEP_PATTERNS` | *(empty)* | Title regexes, one per line, matched case-insensitively; a match overrides every block rule, built-ins included, and the entry is kept. |
 | `PINTXOS_BASE_URL` | *(none, inferred from the request)* | Base URL used to build output feed links, e.g. `https://pintxos.example.com`. |

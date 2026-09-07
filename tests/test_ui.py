@@ -692,6 +692,84 @@ def test_settings_full_text_env_pinned_disables_control_and_ignores_submission(m
     assert row is None
 
 
+def test_settings_page_shows_respect_language_default_on():
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert 'name="respect_language" value="1" checked' in page
+
+
+def test_settings_post_without_respect_language_stores_off():
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings",
+            data={
+                "model": "m",
+                "poll_minutes": "30",
+                "items_per_feed": "50",
+                "api_key": "",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        page = c.get("/settings").text
+
+    assert get_setting("PINTXOS_RESPECT_LANGUAGE") == "0"
+    assert 'name="respect_language" value="1" checked' not in page
+
+
+def test_settings_post_with_respect_language_stores_on():
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings",
+            data={
+                "model": "m",
+                "poll_minutes": "30",
+                "items_per_feed": "50",
+                "api_key": "",
+                "respect_language": "1",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        page = c.get("/settings").text
+
+    assert get_setting("PINTXOS_RESPECT_LANGUAGE") == "1"
+    assert 'name="respect_language" value="1" checked' in page
+
+
+def test_settings_respect_language_env_pinned_disables_control_and_ignores_submission(
+    monkeypatch,
+):
+    monkeypatch.setenv("PINTXOS_RESPECT_LANGUAGE", "0")
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+        assert 'name="respect_language" value="1"  disabled' in page
+        assert 'name="respect_language" value="1" checked' not in page
+        assert "Set by PINTXOS_RESPECT_LANGUAGE in the environment." in page
+
+        c.post(
+            "/settings",
+            data={
+                "model": "m",
+                "poll_minutes": "30",
+                "items_per_feed": "50",
+                "api_key": "",
+                "respect_language": "1",
+            },
+            follow_redirects=False,
+        )
+
+    monkeypatch.delenv("PINTXOS_RESPECT_LANGUAGE")
+    from pintxos.db import db
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", ("PINTXOS_RESPECT_LANGUAGE",)
+        ).fetchone()
+    assert row is None
+
+
 def test_index_ads_skipped_cell_is_empty_without_a_count(monkeypatch):
     """ads_filtered defaults to 0, so nothing renders in the ads-skipped cell."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)

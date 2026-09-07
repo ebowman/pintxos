@@ -373,6 +373,7 @@ def settings_page(request: Request) -> Response:
         items_per_feed = get_setting("PINTXOS_ITEMS_PER_FEED", conn)
         filter_ads = get_setting("PINTXOS_FILTER_ADS", conn)
         full_text = get_setting("PINTXOS_FULL_TEXT", conn)
+        respect_language = get_setting("PINTXOS_RESPECT_LANGUAGE", conn)
         ad_title_patterns = get_setting("PINTXOS_AD_TITLE_PATTERNS", conn) or ""
         ad_keep_patterns = get_setting("PINTXOS_AD_KEEP_PATTERNS", conn) or ""
         row = conn.execute("SELECT value FROM settings WHERE key = ?", ("ANTHROPIC_API_KEY",)).fetchone()
@@ -382,6 +383,8 @@ def settings_page(request: Request) -> Response:
     filter_ads_env = env_pinned("PINTXOS_FILTER_ADS")
     full_text_on = is_truthy(full_text)
     full_text_env = env_pinned("PINTXOS_FULL_TEXT")
+    respect_language_on = is_truthy(respect_language)
+    respect_language_env = env_pinned("PINTXOS_RESPECT_LANGUAGE")
     patterns_env = env_pinned("PINTXOS_AD_TITLE_PATTERNS")
     keep_patterns_env = env_pinned("PINTXOS_AD_KEEP_PATTERNS")
     jar = get_jar()
@@ -406,6 +409,8 @@ def settings_page(request: Request) -> Response:
             "filter_ads_env": filter_ads_env,
             "full_text_on": full_text_on,
             "full_text_env": full_text_env,
+            "respect_language_on": respect_language_on,
+            "respect_language_env": respect_language_env,
             "ad_title_patterns": ad_title_patterns,
             "patterns_env": patterns_env,
             "ad_keep_patterns": ad_keep_patterns,
@@ -429,6 +434,7 @@ def save_settings(
     ad_title_patterns: str = Form(""),
     ad_keep_patterns: str = Form(""),
     full_text: str = Form(""),
+    respect_language: str = Form(""),
 ) -> Response:
     try:
         poll_minutes_i = int(poll_minutes)
@@ -467,6 +473,8 @@ def save_settings(
         pairs.append(("PINTXOS_AD_KEEP_PATTERNS", ad_keep_patterns))
     if not env_pinned("PINTXOS_FULL_TEXT"):
         pairs.append(("PINTXOS_FULL_TEXT", "1" if full_text == "1" else "0"))
+    if not env_pinned("PINTXOS_RESPECT_LANGUAGE"):
+        pairs.append(("PINTXOS_RESPECT_LANGUAGE", "1" if respect_language == "1" else "0"))
 
     with db() as conn:
         conn.executemany(

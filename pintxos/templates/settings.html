@@ -33,6 +33,11 @@
     <div class="muted">Appends the extracted article text below each summary in the output feed, after the Original line. Applies to every feed, including items already stored. Items polled before this option existed have no stored text.</div>
     {% if full_text_env %}<div class="muted">Set by PINTXOS_FULL_TEXT in the environment.</div>{% endif %}
   </div>
+  <div class="field field-checkbox">
+    <label><input type="checkbox" name="respect_language" value="1" {% if respect_language_on %}checked{% endif %} {% if respect_language_env %}disabled{% endif %}> Respect original language</label>
+    <div class="muted">Headline and summary are written in the article's language. Turn off to always summarize in English. Appended full text always stays in the original language.</div>
+    {% if respect_language_env %}<div class="muted">Set by PINTXOS_RESPECT_LANGUAGE in the environment.</div>{% endif %}
+  </div>
 
   <h2>Content filters</h2>
   <h3>Ads</h3>

@@ -125,7 +125,7 @@ def _items_cell(page: str, feed_id: int) -> str:
     row = page[row_start:row_end]
     start = row.index('<td class="output">')
     start = row.index("</td>", start) + len("</td>")
-    end = row.index('<td class="muted nowrap"', start)
+    end = row.index('<td class="muted nowrap', start)
     return row[start:end]
 
 
@@ -983,7 +983,7 @@ def test_index_colgroup_widths_sum_to_100_percent(monkeypatch):
     widths = [int(w) for w in re.findall(r'<col style="width: (\d+)%">', page)]
     assert len(widths) == 6
     assert sum(widths) == 100
-    assert page.count("<th>") == 6
+    assert len(re.findall(r"<th[ >]", page)) == 6
     assert "<th>Status</th>" in page
     assert "<th>Last error</th>" not in page
 
@@ -992,6 +992,34 @@ def test_index_empty_state_colspan_matches_columns():
     with TestClient(app) as c:
         page = c.get("/").text
     assert '<td colspan="6" class="empty">' in page
+
+
+def test_phone_layout_hides_items_last_polled_and_source_url(monkeypatch):
+    """At <=600px, Items, Last polled and the source URL collapse; the table still has
+    6 <th> and the fixed-layout escape hatch drops its old 640px min-width floor."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/").text
+
+    assert page.count('<th class="phone-hide">') == 2
+    assert page.index('<th class="phone-hide">Items</th>') < page.index(
+        '<th class="phone-hide">Last polled</th>'
+    )
+    assert len(re.findall(r"<th[ >]", page)) == 6
+
+    row_start = page.index('<tr id="feed-1"')
+    row_end = page.index("</tr>", row_start)
+    row = page[row_start:row_end]
+    assert row.count("phone-hide") == 2
+    assert 'class="muted url"' in row
+
+    assert (
+        '@media (max-width: 600px) { .phone-hide, table .url { display: none; } }' in page
+    )
+    assert "table-layout: auto;" in page
+    assert "td.output { min-width: 5rem; }" in page
+    assert "min-width: 640px" not in page
 
 
 def test_feed_edit_radios_keep_their_controls(monkeypatch):
@@ -1344,7 +1372,7 @@ def test_index_items_cell_no_longer_shows_login_indicator_counts(monkeypatch):
     # No new column: still 6 <th>s, 6 <col> widths.
     widths = re.findall(r'<col style="width: (\d+)%">', page)
     assert len(widths) == 6
-    assert page.count("<th>") == 6
+    assert len(re.findall(r"<th[ >]", page)) == 6
 
 
 def test_status_cell_shows_paywalled_with_tooltip_and_settings_link(monkeypatch):

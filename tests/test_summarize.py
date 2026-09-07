@@ -3,7 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from pintxos.summarize import MissingApiKey, SummarizeError, summarize
+from pintxos.summarize import (
+    LANGUAGE_RULE_OFF,
+    LANGUAGE_RULE_ON,
+    MissingApiKey,
+    SummarizeError,
+    summarize,
+)
 
 
 class FakeMessages:
@@ -113,4 +119,55 @@ def test_user_message_contains_title_and_truncates_long_text(monkeypatch):
     assert "https://example.com/article" in user_message
 
     article_text = user_message.split("Article text:\n", 1)[1]
+    # The article body is followed by a trailing language-instruction line (see
+    # summarize()); strip it off before counting the truncated body's words.
+    article_text = article_text.split("\n\n", 1)[0]
     assert len(article_text.split()) == 6000
+
+
+def test_respect_language_default_enforces_same_language(monkeypatch):
+    monkeypatch.delenv("PINTXOS_RESPECT_LANGUAGE", raising=False)
+    raw = json.dumps(
+        {"language": "de", "headline": "Bundestag beschließt X", "summary": "Kurz."}
+    )
+    fake = _patch_client(monkeypatch, raw)
+
+    summarize("Der Bundestag hat ...", "Titel", "https://x")
+
+    kwargs = fake.messages.calls[0]
+    system_prompt = kwargs["system"]
+    user_message = kwargs["messages"][0]["content"]
+
+    assert LANGUAGE_RULE_ON in system_prompt
+    assert LANGUAGE_RULE_ON in user_message
+
+    article_index = user_message.index("Article text:\n")
+    rule_index = user_message.index(LANGUAGE_RULE_ON)
+    assert rule_index > article_index
+
+
+def test_respect_language_off_forces_english(monkeypatch):
+    monkeypatch.setenv("PINTXOS_RESPECT_LANGUAGE", "0")
+    raw = json.dumps({"headline": "Headline", "summary": "Summary."})
+    fake = _patch_client(monkeypatch, raw)
+
+    summarize("Der Bundestag hat ...", "Titel", "https://x")
+
+    kwargs = fake.messages.calls[0]
+    system_prompt = kwargs["system"]
+    user_message = kwargs["messages"][0]["content"]
+
+    assert LANGUAGE_RULE_OFF in system_prompt
+    assert LANGUAGE_RULE_OFF in user_message
+    assert LANGUAGE_RULE_ON not in system_prompt
+    assert LANGUAGE_RULE_ON not in user_message
+
+
+def test_reply_with_language_field_parses_headline_and_summary(monkeypatch):
+    raw = json.dumps(
+        {"language": "de", "headline": "Bundestag beschließt X", "summary": "Kurz."}
+    )
+    _patch_client(monkeypatch, raw)
+    headline, summary = summarize("text", "Title", "https://x")
+    assert headline == "Bundestag beschließt X"
+    assert summary == "Kurz."

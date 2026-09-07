@@ -66,6 +66,7 @@
       } else if (resp.status === 404) {
         var row = document.getElementById("feed-" + id);
         if (row) { row.parentNode.removeChild(row); }
+        pintxosApplyFilter();
       }
     }).catch(function () {});
   }
@@ -87,7 +88,7 @@
       if (show) { visible++; }
     }
     var noMatch = document.getElementById("feed-no-match");
-    if (noMatch) { noMatch.hidden = !(v !== "" && visible === 0); }
+    if (noMatch) { noMatch.hidden = !(total > 0 && visible === 0 && v !== ""); }
     var countEl = document.getElementById("feed-count");
     if (countEl) { countEl.textContent = v === "" ? String(total) : (visible + " of " + total); }
     var form = input.closest("form");

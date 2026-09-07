@@ -55,6 +55,7 @@
     @media (max-width: 600px) { .phone-hide, table .url { display: none; } }
     tbody tr:hover { background: var(--surface); }
     tbody tr:last-child td { border-bottom: none; }
+    tbody tr:has(+ #feed-no-match) td { border-bottom: none; }
     td.nowrap { white-space: nowrap; }
     /* Three action buttons on one line, right-aligned. nowrap means they can never break into two rows. */
     td.actions { white-space: nowrap; text-align: right; }

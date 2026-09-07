@@ -1066,7 +1066,7 @@ def test_index_has_edit_filters_link_to_feed(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/").text
     assert 'action="/feeds/1"' in page
-    assert "Edit filters" in page
+    assert _label("Edit") in page
     assert page.count("/feeds/1/poll") == 1
 
 
@@ -1086,7 +1086,7 @@ def test_feed_edit_post_unknown_choice_rejected(monkeypatch):
 
 def test_index_copy_sits_inside_output_url_cell_and_actions_stay_on_one_line(monkeypatch):
     """Copy shares the Output URL cell, right after the URL; the actions cell holds exactly
-    Edit filters, Poll now, Delete in that order and is styled never to wrap."""
+    Edit, Poll now, Delete in that order and is styled never to wrap."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
@@ -1118,7 +1118,7 @@ def test_index_copy_sits_inside_output_url_cell_and_actions_stay_on_one_line(mon
     assert cell.count("<button") == 3
     assert _label("Copy") not in cell and "pintxosCopy" not in cell
     assert "actions-row" not in page
-    order = [cell.index(_label(label)) for label in ("Edit filters", "Poll now", "Delete")]
+    order = [cell.index(_label(label)) for label in ("Edit", "Poll now", "Delete")]
     assert order == sorted(order)
     assert page.count("/feeds/1/poll") == 1
 
@@ -1146,7 +1146,7 @@ def test_table_buttons_carry_feather_icons_for_narrow_screens(monkeypatch):
         assert 'aria-hidden="true"' in svg_tag
 
     assert 'aria-label="Copy output URL"' in row
-    assert 'aria-label="Edit filters"' in row
+    assert 'aria-label="Edit"' in row
     assert 'aria-label="Poll now"' in row
     assert 'aria-label="Delete feed"' in row
     assert "ico-done" in row

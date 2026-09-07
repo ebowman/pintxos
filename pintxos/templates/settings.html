@@ -28,6 +28,11 @@
     <label for="items_per_feed">Items per feed</label>
     <input type="number" id="items_per_feed" name="items_per_feed" min="1" max="500" value="{{ items_per_feed }}">
   </div>
+  <div class="field field-checkbox">
+    <label><input type="checkbox" name="full_text" value="1" {% if full_text_on %}checked{% endif %} {% if full_text_env %}disabled{% endif %}> Include full article text</label>
+    <div class="muted">Appends the extracted article text below each summary in the output feed, after the Original line. Applies to every feed, including items already stored. Items polled before this option existed have no stored text.</div>
+    {% if full_text_env %}<div class="muted">Set by PINTXOS_FULL_TEXT in the environment.</div>{% endif %}
+  </div>
 
   <h2>Content filters</h2>
   <h3>Ads</h3>

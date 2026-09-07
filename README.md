@@ -64,7 +64,9 @@ rules above; `PINTXOS_AD_KEEP_PATTERNS` adds to them. The filter only applies to
 seen after it is turned on — it never touches items already stored. The Feeds page shows "N
 ads skipped" under a feed's item count for its last poll. Each feed can also
 override the global switch and choose whether it inherits, extends, or
-ignores the global patterns from its Edit page.
+ignores the global patterns from its Edit page. The feed's Edit page also
+lets you override its title; leave the field blank to fall back to the
+feed's own title.
 
 ```
 black friday

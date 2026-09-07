@@ -206,6 +206,7 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
 @app.post("/feeds/{feed_id}")
 def feed_edit_save(
     feed_id: int,
+    title: str = Form(""),
     filter_ads: str = Form(""),
     ad_patterns_mode: str = Form(""),
     ad_title_patterns: str = Form(""),
@@ -218,6 +219,10 @@ def feed_edit_save(
     if respect_language not in ("", "0", "1"):
         return _redirect(f"/feeds/{feed_id}", err="Invalid language choice")
 
+    title = title.strip()
+    if len(title) > 200:
+        return _redirect(f"/feeds/{feed_id}", err="Title too long (max 200 characters)")
+
     try:
         adfilter.compile_patterns(ad_title_patterns)
     except ValueError as e:
@@ -229,9 +234,10 @@ def feed_edit_save(
 
     with db() as conn:
         cur = conn.execute(
-            "UPDATE feeds SET filter_ads = ?, ad_patterns_mode = ?, ad_title_patterns = ?, "
-            "respect_language = ? WHERE id = ?",
+            "UPDATE feeds SET title = ?, filter_ads = ?, ad_patterns_mode = ?, "
+            "ad_title_patterns = ?, respect_language = ? WHERE id = ?",
             (
+                title or None,
                 filter_ads_value,
                 patterns_mode_value,
                 ad_title_patterns or None,

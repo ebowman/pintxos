@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from http.cookiejar import MozillaCookieJar
+from urllib.parse import urlparse
 
 import curl_cffi.requests
 import feedparser
@@ -38,21 +40,32 @@ def _make_client(profile: str | None) -> curl_cffi.requests.Session:
     )
 
 
-# ponytail: one shared client and one scheduler at module level. The scheduler runs a
-# single worker thread, so every poll - scheduled or manual - is serialized by
-# construction; ceiling is multi-process deployments (each process would poll).
-# PINTXOS_IMPERSONATE is environment-only (see config.DEFAULTS), read directly from
-# the environment here rather than via get_setting so building the client at import
-# time never touches the DB.
-_client = _make_client(os.environ.get("PINTXOS_IMPERSONATE", DEFAULTS["PINTXOS_IMPERSONATE"]))
+def _parse_profiles(value: str) -> list[str]:
+    """Split a comma-separated PINTXOS_IMPERSONATE value into profiles; "" means none."""
+    return [p.strip() for p in value.split(",")] if value else [""]
+
+
+# ponytail: one shared client per profile and one scheduler at module level. The
+# scheduler runs a single worker thread, so every poll - scheduled or manual - is
+# serialized by construction; ceiling is multi-process deployments (each process would
+# poll). PINTXOS_IMPERSONATE is environment-only (see config.DEFAULTS), read directly
+# from the environment here rather than via get_setting so building the clients at
+# import time never touches the DB.
+_profiles = _parse_profiles(os.environ.get("PINTXOS_IMPERSONATE", DEFAULTS["PINTXOS_IMPERSONATE"]))
+_clients = [_make_client(p or None) for p in _profiles]
 scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
 
-# Which jar object (if any) is currently installed on `_client.cookies`. Compared by
+# Which jar object (if any) is currently installed on the clients' cookies. Compared by
 # identity against get_jar()'s return value so we only reinstall when it changes.
 _client_jar: MozillaCookieJar | None = None
 
 # What each feed is doing right now, for the UI. In-memory: single process, dies with it.
 _status: dict[int, str] = {}
+
+_CHALLENGE_ATTEMPTS = 3
+_HOST_PAUSE = 2.0
+_last_request: dict[str, float] = {}
+_BLOCKED_RETRIES = 3
 
 
 def _get(url: str) -> curl_cffi.requests.Response:
@@ -60,13 +73,29 @@ def _get(url: str) -> curl_cffi.requests.Response:
     global _client_jar
     jar = get_jar()
     if jar is not _client_jar:
-        # ponytail: jar installed on the shared session, swapped on identity; ceiling:
-        # response cookies live only in memory.
-        _client.cookies = (
+        # ponytail: jar installed on every shared session, swapped on identity;
+        # ceiling: response cookies live only in memory.
+        cookies = (
             curl_cffi.requests.Cookies(jar) if jar is not None else curl_cffi.requests.Cookies()
         )
+        for client in _clients:
+            client.cookies = cookies
         _client_jar = jar
-    return _client.get(url)
+
+    host = urlparse(url).hostname or ""
+    # A challenge is probabilistic per request; retry across the profile list. The
+    # per-host pacing below already waits out the two seconds between attempts.
+    for attempt in range(_CHALLENGE_ATTEMPTS):
+        wait = _last_request.get(host, 0.0) + _HOST_PAUSE - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        resp = _clients[attempt % len(_clients)].get(url)
+        _last_request[host] = time.monotonic()
+        if resp.status_code != 403 or resp.headers.get("cf-mitigated") != "challenge":
+            return resp
+        if attempt + 1 < _CHALLENGE_ATTEMPTS:
+            log.info("cloudflare challenge on %s, retrying", url)
+    return resp
 
 
 def fetch_article(link: str) -> tuple[str | None, str]:
@@ -321,6 +350,11 @@ def poll_feed(feed_id: int) -> bool:
                     ),
                 )
 
+        if jar is not None:
+            # ponytail: three blocked items per poll; ceiling: a site that blocks
+            # everything costs three fetches per poll, no summary calls.
+            retry_fallback(feed_id, limit=_BLOCKED_RETRIES, only_blocked=True)
+
         with db() as conn:
             conn.execute(
                 "DELETE FROM items WHERE feed_id = ? AND id NOT IN "
@@ -338,13 +372,18 @@ def poll_feed(feed_id: int) -> bool:
         _status.pop(feed_id, None)
 
 
-def retry_fallback(feed_id: int) -> None:
+def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = False) -> None:
     """Re-fetch and re-summarize this feed's fallback items in place; never deletes."""
+    sql = "SELECT id, link, original_title FROM items WHERE feed_id = ? AND fallback = 1"
+    params: list[object] = [feed_id]
+    if only_blocked:
+        # NULL: rows from before the column existed; one attempt gives them a real status.
+        sql += " AND (fetch_status = 'blocked' OR fetch_status IS NULL)"
+    if limit is not None:
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
     with db() as conn:
-        rows = conn.execute(
-            "SELECT id, link, original_title FROM items WHERE feed_id = ? AND fallback = 1",
-            (feed_id,),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
         feed_row = conn.execute(
             "SELECT respect_language FROM feeds WHERE id = ?", (feed_id,)
         ).fetchone()
@@ -357,6 +396,7 @@ def retry_fallback(feed_id: int) -> None:
 
     jar = get_jar()
     total = len(rows)
+    prev = _status.get(feed_id)
     try:
         for i, row in enumerate(rows, 1):
             item_id, link, original_title = row["id"], row["link"], row["original_title"]
@@ -399,7 +439,10 @@ def retry_fallback(feed_id: int) -> None:
                     (headline, summary, auth, words, fetch_status, text, item_id),
                 )
     finally:
-        _status.pop(feed_id, None)
+        if prev is None:
+            _status.pop(feed_id, None)
+        else:
+            _status[feed_id] = prev
 
 
 def retry_one(feed_id: int) -> None:

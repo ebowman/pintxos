@@ -28,10 +28,12 @@ WIRED = (Path(__file__).parent / "fixtures" / "wired.xml").read_bytes()
 
 
 class FakeResponse:
-    def __init__(self, content: bytes, status_code: int = 200, content_type="application/xml"):
+    def __init__(
+        self, content: bytes, status_code: int = 200, content_type="application/xml", headers=None
+    ):
         self.content = content
         self.status_code = status_code
-        self.headers = {"content-type": content_type}
+        self.headers = headers if headers is not None else {"content-type": content_type}
 
     @property
     def text(self) -> str:
@@ -531,6 +533,117 @@ def test_retry_fallback_failure_leaves_text_unchanged(feed_id, monkeypatch):
     assert rows[0]["text"] == "original text"
 
 
+def _seed_blocked_items(feed_id, n, start_guid=1):
+    """Insert `n` blocked fallback rows, oldest guid first; returns their ids in insert order."""
+    ids = []
+    for i in range(start_guid, start_guid + n):
+        item_id = _seed_fallback_item(feed_id, guid=f"blocked-{i}", link=f"https://example.com/b{i}")
+        with db() as conn:
+            conn.execute("UPDATE items SET fetch_status = 'blocked' WHERE id = ?", (item_id,))
+        ids.append(item_id)
+    return ids
+
+
+def _mark_sample_guids_seen(feed_id):
+    """Insert rows for every SAMPLE guid so a poll of that fixture finds no new entries."""
+    with db() as conn:
+        for guid in ["https://example.com/one", "https://example.com/two", "https://example.com/three"]:
+            conn.execute(
+                "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
+                "headline, summary, fallback, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (feed_id, guid, guid, guid, now(), "h", "s", 0, now()),
+            )
+
+
+def test_poll_feed_retries_three_newest_blocked_items(feed_id, calls, monkeypatch):
+    """On a normal poll, only the three newest blocked-or-NULL fallback rows are
+    retried; the rest, and a teaser row, are left untouched. A NULL fetch_status
+    (an item written before that column existed) counts as retriable, same as
+    'blocked'."""
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+    blocked_ids = _seed_blocked_items(feed_id, 5)
+    # The newest blocked row instead has no fetch_status at all (pre-migration row).
+    null_status_id = blocked_ids[-1]
+    with db() as conn:
+        conn.execute("UPDATE items SET fetch_status = NULL WHERE id = ?", (null_status_id,))
+    teaser_id = _seed_fallback_item(feed_id, guid="teaser-1", link="https://example.com/t1")
+    with db() as conn:
+        conn.execute("UPDATE items SET fetch_status = 'teaser' WHERE id = ?", (teaser_id,))
+    _mark_sample_guids_seen(feed_id)
+
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
+
+    assert poll.poll_feed(feed_id) is True
+
+    rows = {row["id"]: row for row in items()}
+    retried_ids = set(blocked_ids[-3:])  # three newest (highest id) rows, incl. the NULL one
+    assert null_status_id in retried_ids
+    for item_id in blocked_ids:
+        row = rows[item_id]
+        if item_id in retried_ids:
+            assert row["fallback"] == 0
+            assert row["fetch_status"] == "ok"
+        else:
+            assert row["fallback"] == 1
+            assert row["fetch_status"] == "blocked"
+    assert rows[teaser_id]["fallback"] == 1
+    assert rows[teaser_id]["fetch_status"] == "teaser"
+
+
+def test_poll_feed_does_not_retry_blocked_items_without_cookies(feed_id, calls, monkeypatch):
+    """No cookies.txt means get_jar() is None: poll_feed must skip the blocked retry."""
+    blocked_ids = _seed_blocked_items(feed_id, 5)
+    _mark_sample_guids_seen(feed_id)
+
+    def boom_fetch_article(link):
+        raise AssertionError("fetch_article should not be called: no cookies means no retry")
+
+    monkeypatch.setattr(poll, "fetch_article", boom_fetch_article)
+
+    assert poll.poll_feed(feed_id) is True
+
+    rows = {row["id"]: row for row in items()}
+    for item_id in blocked_ids:
+        assert rows[item_id]["fallback"] == 1
+        assert rows[item_id]["fetch_status"] == "blocked"
+
+
+def test_retry_fallback_button_path_still_retries_all_blocked_items(feed_id, monkeypatch):
+    """The manual retry-fallback button calls retry_fallback with no limit/only_blocked,
+    so it must still retry every fallback row regardless of fetch_status."""
+    blocked_ids = _seed_blocked_items(feed_id, 5)
+    teaser_id = _seed_fallback_item(feed_id, guid="teaser-1", link="https://example.com/t1")
+    with db() as conn:
+        conn.execute("UPDATE items SET fetch_status = 'teaser' WHERE id = ?", (teaser_id,))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
+
+    poll.retry_fallback(feed_id)
+
+    rows = {row["id"]: row for row in items()}
+    for item_id in blocked_ids + [teaser_id]:
+        assert rows[item_id]["fallback"] == 0
+        assert rows[item_id]["fetch_status"] == "ok"
+
+
+def test_retry_fallback_restores_callers_status_instead_of_popping(feed_id, monkeypatch):
+    """When retry_fallback is invoked with a status already set for this feed (as
+    poll_feed does), it must restore that status afterwards rather than popping it,
+    so the caller's own status survives the nested call."""
+    _seed_blocked_items(feed_id, 1)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
+
+    poll._status[feed_id] = "Summarizing 2/3"
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    assert poll._status[feed_id] == "Summarizing 2/3"
+
+    poll._status.pop(feed_id, None)
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    assert feed_id not in poll._status
+
+
 def test_ui_can_write_while_polling(feed_id, calls, monkeypatch):
     """A second writer (the web UI) must not hit 'database is locked' mid-poll."""
     import sqlite3
@@ -933,10 +1046,16 @@ def test_make_client_impersonation(profile, expect_impersonate, expect_pintxos_u
 def _reset_client_jar(monkeypatch):
     """Cookie-jar tests must not leak the installed jar across test order."""
     monkeypatch.setattr(poll, "_client_jar", None)
-    poll._client.cookies = curl_cffi.requests.Cookies()
+    poll._clients[0].cookies = curl_cffi.requests.Cookies()
     yield
     poll._client_jar = None
-    poll._client.cookies = curl_cffi.requests.Cookies()
+    poll._clients[0].cookies = curl_cffi.requests.Cookies()
+
+
+@pytest.fixture
+def _reset_last_request(monkeypatch):
+    """Per-host pacing tests must not leak the last-request clock across test order."""
+    monkeypatch.setattr(poll, "_last_request", {})
 
 
 def test_get_installs_jar_on_client_and_clears_it_when_file_removed(_reset_client_jar, monkeypatch):
@@ -945,21 +1064,169 @@ def test_get_installs_jar_on_client_and_clears_it_when_file_removed(_reset_clien
     def fake(url):
         return FakeResponse(b"<html>ok</html>", content_type="text/html")
 
-    monkeypatch.setattr(poll._client, "get", fake)
+    monkeypatch.setattr(poll._clients[0], "get", fake)
 
     poll._get("https://www.example.com/a")
 
-    assert poll._client.cookies.get("sid", domain=".example.com") == "abc"
-    installed_jar = poll._client.cookies.jar
+    assert poll._clients[0].cookies.get("sid", domain=".example.com") == "abc"
+    installed_jar = poll._clients[0].cookies.jar
 
     # Cookies file is unchanged, so the second call must not reinstall the jar.
     poll._get("https://www.example.com/a")
-    assert poll._client.cookies.jar is installed_jar
+    assert poll._clients[0].cookies.jar is installed_jar
 
     cookie_path().unlink()
 
     poll._get("https://www.example.com/a")
-    assert len(poll._client.cookies) == 0
+    assert len(poll._clients[0].cookies) == 0
+
+
+# --- Cloudflare challenge retry across profiles ------------------------------------
+
+
+class FakeClient:
+    """Stands in for a curl_cffi Session: returns responses from a scripted list."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def get(self, url):
+        resp = self._responses[self.calls]
+        self.calls += 1
+        return resp
+
+
+def _challenge_response():
+    return FakeResponse(b"", status_code=403, headers={"cf-mitigated": "challenge"})
+
+
+def _plain_403_response():
+    return FakeResponse(b"", status_code=403)
+
+
+def _ok_response():
+    return FakeResponse(b"<html>ok</html>", content_type="text/html")
+
+
+def test_get_retries_challenge_then_succeeds(_reset_client_jar, _reset_last_request, monkeypatch):
+    fake = FakeClient([_challenge_response(), _ok_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    clock = [1000.0]
+    sleeps = []
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr(poll.time, "sleep", fake_sleep)
+    monkeypatch.setattr(poll.time, "monotonic", lambda: clock[0])
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp.status_code == 200
+    assert sleeps == [poll._HOST_PAUSE]
+
+
+def test_get_gives_up_after_all_challenge_attempts(_reset_client_jar, _reset_last_request, monkeypatch):
+    responses = [_challenge_response(), _challenge_response(), _challenge_response()]
+    fake = FakeClient(responses)
+    monkeypatch.setattr(poll, "_clients", [fake])
+    clock = [1000.0]
+    sleeps = []
+
+    def fake_sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+
+    monkeypatch.setattr(poll.time, "sleep", fake_sleep)
+    monkeypatch.setattr(poll.time, "monotonic", lambda: clock[0])
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp is responses[-1]
+    assert sleeps == [poll._HOST_PAUSE, poll._HOST_PAUSE]
+
+
+def test_get_gives_up_after_all_challenge_attempts_reports_blocked(_reset_client_jar, _reset_last_request, monkeypatch):
+    fake = FakeClient([_challenge_response(), _challenge_response(), _challenge_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    monkeypatch.setattr(poll.time, "sleep", lambda s: None)
+
+    text, status = poll.fetch_article("https://example.com/a")
+
+    assert text is None
+    assert status == "blocked"
+
+
+def test_get_retries_second_attempt_on_next_profile(_reset_client_jar, _reset_last_request, monkeypatch):
+    client1 = FakeClient([_challenge_response(), _ok_response()])
+    client2 = FakeClient([_ok_response()])
+    monkeypatch.setattr(poll, "_clients", [client1, client2])
+    monkeypatch.setattr(poll.time, "sleep", lambda s: None)
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp.status_code == 200
+    assert client1.calls == 1
+    assert client2.calls == 1
+
+
+def test_get_plain_403_returns_immediately_without_retry(_reset_client_jar, _reset_last_request, monkeypatch):
+    fake = FakeClient([_plain_403_response(), _ok_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    sleeps = []
+    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    resp = poll._get("https://example.com/a")
+
+    assert resp.status_code == 403
+    assert fake.calls == 1
+    assert sleeps == []
+
+
+# --- Per-host pacing -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url1, url2, elapsed, expected_sleeps",
+    [
+        # Same host, 0.5s elapsed: second call waits out the remaining 1.5s.
+        ("https://example.com/a", "https://example.com/b", 0.5, [1.5]),
+        # Different hosts: no pacing wait.
+        ("https://example.com/a", "https://other.com/b", 0.5, []),
+        # Same host, but the pause has already elapsed: no wait.
+        ("https://example.com/a", "https://example.com/b", 3.0, []),
+    ],
+)
+def test_get_paces_requests_to_same_host(
+    _reset_client_jar, _reset_last_request, monkeypatch, url1, url2, elapsed, expected_sleeps
+):
+    fake = FakeClient([_ok_response(), _ok_response()])
+    monkeypatch.setattr(poll, "_clients", [fake])
+    sleeps = []
+    monkeypatch.setattr(poll.time, "sleep", lambda s: sleeps.append(s))
+
+    clock = [1000.0]
+    monkeypatch.setattr(poll.time, "monotonic", lambda: clock[0])
+
+    poll._get(url1)
+    clock[0] += elapsed
+    poll._get(url2)
+
+    assert sleeps == pytest.approx(expected_sleeps)
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("a, b", ["a", "b"]),
+        ("", [""]),
+        ("safari17_0", ["safari17_0"]),
+    ],
+)
+def test_parse_profiles(value, expected):
+    assert poll._parse_profiles(value) == expected
 
 
 def test_cookies_only_sent_to_matching_domain_and_zero_expiry_is_a_session_cookie():

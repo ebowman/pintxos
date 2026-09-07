@@ -179,7 +179,7 @@ to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST`,
 | `PINTXOS_DATA_DIR` | `./data` | Directory for the SQLite database and `cookies.txt`. |
 | `PINTXOS_HOST` | `127.0.0.1` | Host/interface the server binds to. The Docker image sets `PINTXOS_HOST=0.0.0.0`. |
 | `PINTXOS_PORT` | `8000` | Port the server binds to. |
-| `PINTXOS_IMPERSONATE` | `safari17_0` | curl_cffi browser TLS/HTTP fingerprint used for all fetches, so Cloudflare-fronted sites accept the request. Set empty to disable impersonation (uses the Pintxøs User-Agent instead). |
+| `PINTXOS_IMPERSONATE` | `safari17_0` | curl_cffi browser TLS/HTTP fingerprint used for all fetches, so Cloudflare-fronted sites accept the request. Set empty to disable impersonation (uses the Pintxøs User-Agent instead). A comma-separated list is tried in turn when Cloudflare challenges a request, e.g. `safari17_0,safari17_2_ios`. |
 | `PINTXOS_NO_SCHEDULER` | *(unset)* | Set to `1` to disable polling entirely, periodic **and** manual (Poll now queues forever). For tests and CI only. For a local run without periodic polls, set `PINTXOS_POLL_MINUTES=1440` instead. |
 
 The ad filter toggle and extra patterns can also be changed on the Settings page unless the corresponding environment variable is set.
@@ -208,7 +208,10 @@ above: cookies expire.
 
 Fetches impersonate a real browser (`PINTXOS_IMPERSONATE`, default
 `safari17_0`), because these sites reject plain HTTP clients before ever
-looking at a cookie.
+looking at a cookie. A challenged request is retried on the next
+profile in the list, requests to one site are spaced two seconds
+apart, and each scheduled poll re-fetches up to three items that were
+blocked earlier.
 
 ## Security warning
 

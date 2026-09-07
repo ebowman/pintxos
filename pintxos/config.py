@@ -25,7 +25,8 @@ DEFAULTS: dict[str, str | None] = {
     "PINTXOS_HOST": "127.0.0.1",
     "PINTXOS_PORT": "8000",
     # Environment-only: curl_cffi browser profile used for all fetches; empty disables
-    # impersonation.
+    # impersonation. May be a comma-separated list of profiles, tried in order when a
+    # request is challenged.
     "PINTXOS_IMPERSONATE": "safari17_0",
 }
 

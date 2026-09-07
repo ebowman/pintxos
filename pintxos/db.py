@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS feeds (
     last_filtered TEXT,
     filter_ads INTEGER,
     ad_title_patterns TEXT,
-    ad_patterns_mode INTEGER
+    ad_patterns_mode INTEGER,
+    respect_language INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -71,6 +72,8 @@ def connect() -> sqlite3.Connection:
         ("ad_title_patterns", "TEXT"),
         # NULL = inherit (global patterns only); 1 = global + this feed's; 0 = no extra patterns.
         ("ad_patterns_mode", "INTEGER"),
+        # NULL = follow the global PINTXOS_RESPECT_LANGUAGE setting; 1/0 = explicit per-feed override.
+        ("respect_language", "INTEGER"),
     ):
         if name not in cols:
             conn.execute(f"ALTER TABLE feeds ADD COLUMN {name} {ddl}")

@@ -145,6 +145,45 @@ def test_connect_migrates_existing_db_missing_per_feed_ad_columns(tmp_path, monk
         conn.close()
 
 
+def test_feeds_has_respect_language_column(db):
+    assert "respect_language" in {r["name"] for r in db.execute("PRAGMA table_info(feeds)")}
+
+
+def test_connect_migrates_existing_db_missing_respect_language(tmp_path, monkeypatch):
+    """A DB created before the per-feed language override gains the column on connect()."""
+    monkeypatch.setenv("PINTXOS_DATA_DIR", str(tmp_path))
+    old_conn = sqlite3.connect(db_path())
+    old_conn.executescript(
+        """
+        CREATE TABLE feeds (
+            id INTEGER PRIMARY KEY,
+            url TEXT UNIQUE NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            last_polled_at TEXT,
+            last_error TEXT,
+            ads_filtered INTEGER NOT NULL DEFAULT 0,
+            last_filtered TEXT,
+            filter_ads INTEGER,
+            ad_title_patterns TEXT,
+            ad_patterns_mode INTEGER
+        );
+        INSERT INTO feeds (url) VALUES ('https://example.com/feed.xml');
+        """
+    )
+    old_conn.commit()
+    old_conn.close()
+
+    conn = connect()
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(feeds)")}
+        assert "respect_language" in cols
+        row = conn.execute("SELECT * FROM feeds").fetchone()
+        assert row["respect_language"] is None  # existing feeds follow the global setting
+    finally:
+        conn.close()
+
+
 def test_items_has_word_count_column(db):
     assert "word_count" in {r["name"] for r in db.execute("PRAGMA table_info(items)")}
 

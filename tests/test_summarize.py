@@ -163,6 +163,35 @@ def test_respect_language_off_forces_english(monkeypatch):
     assert LANGUAGE_RULE_ON not in user_message
 
 
+def test_explicit_respect_language_overrides_global_setting(monkeypatch):
+    # Global setting says "respect the article's language" (env unset, default "1"),
+    # but an explicit False argument must win and force English.
+    monkeypatch.delenv("PINTXOS_RESPECT_LANGUAGE", raising=False)
+    raw = json.dumps({"headline": "Headline", "summary": "Summary."})
+    fake = _patch_client(monkeypatch, raw)
+
+    summarize("Der Bundestag hat ...", "Titel", "https://x", respect_language=False)
+
+    kwargs = fake.messages.calls[0]
+    system_prompt = kwargs["system"]
+    user_message = kwargs["messages"][0]["content"]
+    assert LANGUAGE_RULE_OFF in system_prompt
+    assert LANGUAGE_RULE_OFF in user_message
+    assert LANGUAGE_RULE_ON not in system_prompt
+
+    fake2 = _patch_client(monkeypatch, raw)
+    monkeypatch.setenv("PINTXOS_RESPECT_LANGUAGE", "0")
+
+    summarize("Der Bundestag hat ...", "Titel", "https://x", respect_language=True)
+
+    kwargs2 = fake2.messages.calls[0]
+    system_prompt2 = kwargs2["system"]
+    user_message2 = kwargs2["messages"][0]["content"]
+    assert LANGUAGE_RULE_ON in system_prompt2
+    assert LANGUAGE_RULE_ON in user_message2
+    assert LANGUAGE_RULE_OFF not in system_prompt2
+
+
 def test_reply_with_language_field_parses_headline_and_summary(monkeypatch):
     raw = json.dumps(
         {"language": "de", "headline": "Bundestag beschließt X", "summary": "Kurz."}

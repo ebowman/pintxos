@@ -55,7 +55,7 @@ def calls(monkeypatch):
             return FakeResponse(SAMPLE)
         raise AssertionError(f"unexpected GET {url}")
 
-    def fake_summarize(text, original_title, url):
+    def fake_summarize(text, original_title, url, respect_language=None):
         seen.append((text, original_title, url))
         return f"HEADLINE {len(seen)}", f"summary of {original_title}"
 
@@ -75,7 +75,7 @@ def calls_with_ad(monkeypatch):
             return FakeResponse(SAMPLE_WITH_AD)
         raise AssertionError(f"unexpected GET {url}")
 
-    def fake_summarize(text, original_title, url):
+    def fake_summarize(text, original_title, url, respect_language=None):
         seen.append((text, original_title, url))
         return f"HEADLINE {len(seen)}", f"summary of {original_title}"
 
@@ -218,7 +218,7 @@ def test_missing_api_key_aborts_without_inserting(feed_id, calls, monkeypatch):
 
 
 def test_summarize_error_skips_only_that_item(feed_id, calls, monkeypatch):
-    def flaky(text, original_title, url):
+    def flaky(text, original_title, url, respect_language=None):
         if url == "https://example.com/two":
             raise SummarizeError("API said no")
         return "HEADLINE", "summary"
@@ -344,9 +344,9 @@ def test_status_cleared_after_poll(feed_id, calls, monkeypatch):
     seen_status = []
     real_summarize = poll.summarize
 
-    def spy(text, original_title, url):
+    def spy(text, original_title, url, respect_language=None):
         seen_status.append(poll._status.get(feed_id))
-        return real_summarize(text, original_title, url)
+        return real_summarize(text, original_title, url, respect_language=respect_language)
 
     monkeypatch.setattr(poll, "summarize", spy)
     assert poll.poll_feed(feed_id) is True
@@ -443,7 +443,7 @@ def _seed_fallback_item(feed_id, guid="guid-1", link="https://example.com/one") 
 def test_retry_fallback_sets_fetch_status_ok_on_success(feed_id, monkeypatch):
     item_id = _seed_fallback_item(feed_id)
     monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
-    monkeypatch.setattr(poll, "summarize", lambda text, title, url: ("New", "New summary"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, respect_language=None: ("New", "New summary"))
 
     poll.retry_fallback(feed_id)
 
@@ -504,7 +504,7 @@ def test_retry_fallback_success_writes_text(feed_id, monkeypatch):
     item_id = _seed_fallback_item(feed_id)
     fetched_text = "FULL ARTICLE TEXT " * 20
     monkeypatch.setattr(poll, "fetch_article", lambda link: (fetched_text, "ok"))
-    monkeypatch.setattr(poll, "summarize", lambda text, title, url: ("New", "New summary"))
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, respect_language=None: ("New", "New summary"))
 
     poll.retry_fallback(feed_id)
 
@@ -537,7 +537,7 @@ def test_ui_can_write_while_polling(feed_id, calls, monkeypatch):
 
     from pintxos.db import connect
 
-    def summarize_and_write(text, original_title, url):
+    def summarize_and_write(text, original_title, url, respect_language=None):
         other = connect()
         other.execute("PRAGMA busy_timeout = 200")
         try:
@@ -566,9 +566,9 @@ def test_ad_entry_filtered_before_summarize(feed_id, calls_with_ad, monkeypatch)
     seen_status = []
     fake_summarize = poll.summarize
 
-    def spy(text, original_title, url):
+    def spy(text, original_title, url, respect_language=None):
         seen_status.append(poll._status.get(feed_id))
-        return fake_summarize(text, original_title, url)
+        return fake_summarize(text, original_title, url, respect_language=respect_language)
 
     monkeypatch.setattr(poll, "summarize", spy)
     assert poll.poll_feed(feed_id) is True
@@ -649,7 +649,7 @@ def test_extra_pattern_filters_entry_not_caught_by_builtin_rules(feed_id, monkey
             return FakeResponse(xml)
         raise AssertionError(f"unexpected GET {url}")
 
-    def fake_summarize(text, original_title, url):
+    def fake_summarize(text, original_title, url, respect_language=None):
         seen.append(original_title)
         return "HEADLINE", f"summary of {original_title}"
 
@@ -716,7 +716,7 @@ def test_last_filtered_records_title_and_reason_for_wired_fixture(feed_id, monke
     monkeypatch.setattr(poll, "_get", fake_get)
     monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
     monkeypatch.setattr(
-        poll, "summarize", lambda text, title, url: ("H", f"summary of {title}")
+        poll, "summarize", lambda text, title, url, respect_language=None: ("H", f"summary of {title}")
     )
 
     poll.poll_feed(feed_id)
@@ -741,7 +741,7 @@ def _serve(monkeypatch, xml: bytes) -> list[str]:
             return FakeResponse(xml)
         raise AssertionError(f"unexpected GET {url}")
 
-    def fake_summarize(text, original_title, url):
+    def fake_summarize(text, original_title, url, respect_language=None):
         seen.append(original_title)
         return "HEADLINE", f"summary of {original_title}"
 
@@ -779,6 +779,54 @@ def test_feed_override_and_global_interaction(
         assert len(calls_with_ad) == 3
         assert "https://example.com/coupons" in [row["link"] for row in items()]
         assert feed_row(feed_id)["ads_filtered"] == 0
+
+
+def test_poll_feed_passes_feed_override_respect_language_false(feed_id, calls, monkeypatch):
+    set_feed(feed_id, respect_language=0)
+    seen_kwargs = []
+    fake_summarize = poll.summarize
+
+    def spy(text, original_title, url, respect_language=None):
+        seen_kwargs.append(respect_language)
+        return fake_summarize(text, original_title, url, respect_language=respect_language)
+
+    monkeypatch.setattr(poll, "summarize", spy)
+    poll.poll_feed(feed_id)
+    assert seen_kwargs
+    assert all(value is False for value in seen_kwargs)
+
+
+def test_poll_feed_falls_back_to_global_respect_language_when_unset(
+    feed_id, calls, monkeypatch
+):
+    assert feed_row(feed_id)["respect_language"] is None  # a new feed has no override
+    monkeypatch.delenv("PINTXOS_RESPECT_LANGUAGE", raising=False)
+    seen_kwargs = []
+    fake_summarize = poll.summarize
+
+    def spy(text, original_title, url, respect_language=None):
+        seen_kwargs.append(respect_language)
+        return fake_summarize(text, original_title, url, respect_language=respect_language)
+
+    monkeypatch.setattr(poll, "summarize", spy)
+    poll.poll_feed(feed_id)
+    assert seen_kwargs
+    assert all(value is True for value in seen_kwargs)
+
+
+def test_retry_fallback_passes_feed_override_respect_language_false(feed_id, monkeypatch):
+    set_feed(feed_id, respect_language=0)
+    _seed_fallback_item(feed_id)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    seen_kwargs = []
+
+    def fake_summarize(text, original_title, url, respect_language=None):
+        seen_kwargs.append(respect_language)
+        return "New", "New summary"
+
+    monkeypatch.setattr(poll, "summarize", fake_summarize)
+    poll.retry_fallback(feed_id)
+    assert seen_kwargs == [False]
 
 
 # The third entry is renamed to something only a per-feed pattern catches, the second to

@@ -131,6 +131,14 @@ def _filter_ads_enabled(conn, feed) -> bool:
     return is_truthy(get_setting("PINTXOS_FILTER_ADS", conn))
 
 
+def _respect_language(conn, feed) -> bool:
+    """Effective respect-language toggle for `feed`: its override if set, else global."""
+    override = feed["respect_language"]
+    if override is not None:
+        return bool(int(override))
+    return is_truthy(get_setting("PINTXOS_RESPECT_LANGUAGE", conn))
+
+
 def _extra_ad_patterns(conn, feed) -> list[re.Pattern]:
     """Extra title patterns for this feed, honouring its ad_patterns_mode.
 
@@ -217,6 +225,7 @@ def poll_feed(feed_id: int) -> bool:
         url, feed_title = feed["url"], feed["title"]
         limit = int(get_setting("PINTXOS_ITEMS_PER_FEED", conn))
         filter_ads = _filter_ads_enabled(conn, feed)
+        respect_language = _respect_language(conn, feed)
         extra_ad_patterns = _extra_ad_patterns(conn, feed) if filter_ads else []
         keep_patterns = _keep_patterns(conn) if filter_ads else []
 
@@ -288,7 +297,9 @@ def poll_feed(feed_id: int) -> bool:
             log.info("summarizing %s", link)
             _status[feed_id] = f"Summarizing {i}/{total}"
             try:
-                headline, summary = summarize(text, original_title, link)
+                headline, summary = summarize(
+                    text, original_title, link, respect_language=respect_language
+                )
             except MissingApiKey:
                 log.error("ANTHROPIC_API_KEY not set, stopping poll")
                 _set_error(feed_id, "ANTHROPIC_API_KEY not set", polled=False)
@@ -334,6 +345,15 @@ def retry_fallback(feed_id: int) -> None:
             "SELECT id, link, original_title FROM items WHERE feed_id = ? AND fallback = 1",
             (feed_id,),
         ).fetchall()
+        feed_row = conn.execute(
+            "SELECT respect_language FROM feeds WHERE id = ?", (feed_id,)
+        ).fetchone()
+        override = feed_row["respect_language"] if feed_row is not None else None
+        respect_language = (
+            bool(int(override))
+            if override is not None
+            else is_truthy(get_setting("PINTXOS_RESPECT_LANGUAGE", conn))
+        )
 
     jar = get_jar()
     total = len(rows)
@@ -351,7 +371,9 @@ def retry_fallback(feed_id: int) -> None:
                 continue
 
             try:
-                headline, summary = summarize(text, original_title, link)
+                headline, summary = summarize(
+                    text, original_title, link, respect_language=respect_language
+                )
             except MissingApiKey:
                 log.error("ANTHROPIC_API_KEY not set, stopping retry")
                 _set_error(feed_id, "ANTHROPIC_API_KEY not set", polled=False)

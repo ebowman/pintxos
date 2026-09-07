@@ -157,6 +157,7 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             raise HTTPException(status_code=404, detail="feed not found")
         global_filter_ads_on = is_truthy(get_setting("PINTXOS_FILTER_ADS", conn))
         global_patterns = get_setting("PINTXOS_AD_TITLE_PATTERNS", conn) or ""
+        global_respect_language_on = is_truthy(get_setting("PINTXOS_RESPECT_LANGUAGE", conn))
         counts = conn.execute(
             f"SELECT COUNT(*) AS total, SUM(fallback = 1) AS fallback_count, "
             f"{_bucket_sql('')} FROM items WHERE feed_id = ?",
@@ -194,6 +195,7 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "ad_title_patterns": feed["ad_title_patterns"] or "",
             "global_filter_ads_on": global_filter_ads_on,
             "global_patterns": global_patterns,
+            "global_respect_language_on": global_respect_language_on,
             "last_filtered": last_filtered,
             "fallback_count": fallback_count,
             "fetch_status": fetch_status,
@@ -207,11 +209,14 @@ def feed_edit_save(
     filter_ads: str = Form(""),
     ad_patterns_mode: str = Form(""),
     ad_title_patterns: str = Form(""),
+    respect_language: str = Form(""),
 ) -> Response:
     if filter_ads not in ("", "0", "1"):
         return _redirect(f"/feeds/{feed_id}", err="Invalid filter choice")
     if ad_patterns_mode not in ("", "0", "1"):
         return _redirect(f"/feeds/{feed_id}", err="Invalid patterns choice")
+    if respect_language not in ("", "0", "1"):
+        return _redirect(f"/feeds/{feed_id}", err="Invalid language choice")
 
     try:
         adfilter.compile_patterns(ad_title_patterns)
@@ -220,12 +225,19 @@ def feed_edit_save(
 
     filter_ads_value = int(filter_ads) if filter_ads else None
     patterns_mode_value = int(ad_patterns_mode) if ad_patterns_mode else None
+    respect_language_value = int(respect_language) if respect_language else None
 
     with db() as conn:
         cur = conn.execute(
-            "UPDATE feeds SET filter_ads = ?, ad_patterns_mode = ?, ad_title_patterns = ? "
-            "WHERE id = ?",
-            (filter_ads_value, patterns_mode_value, ad_title_patterns or None, feed_id),
+            "UPDATE feeds SET filter_ads = ?, ad_patterns_mode = ?, ad_title_patterns = ?, "
+            "respect_language = ? WHERE id = ?",
+            (
+                filter_ads_value,
+                patterns_mode_value,
+                ad_title_patterns or None,
+                respect_language_value,
+                feed_id,
+            ),
         )
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="feed not found")

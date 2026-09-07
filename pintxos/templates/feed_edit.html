@@ -5,6 +5,15 @@
 <div class="muted url">{{ feed.url }}</div>
 <form class="filters" method="post" action="/feeds/{{ feed.id }}">
   <fieldset class="field">
+    <legend>Language</legend>
+    <div class="radios">
+      <label class="radio"><input type="radio" name="respect_language" value="" {% if feed.respect_language is none %}checked{% endif %}> <a href="/settings">Global</a> (currently {{ "on" if global_respect_language_on else "off" }})</label>
+      <label class="radio"><input type="radio" name="respect_language" value="1" {% if feed.respect_language == 1 %}checked{% endif %}> On</label>
+      <label class="radio"><input type="radio" name="respect_language" value="0" {% if feed.respect_language == 0 %}checked{% endif %}> Off</label>
+    </div>
+    <div class="muted">On: headline and summary in the article's language. Off: always English.</div>
+  </fieldset>
+  <fieldset class="field">
     <legend>Ad filter</legend>
     <div class="radios">
       <label class="radio"><input type="radio" name="filter_ads" value="" {% if feed.filter_ads is none %}checked{% endif %}> <a href="/settings">Global</a> (currently {{ "on" if global_filter_ads_on else "off" }})</label>

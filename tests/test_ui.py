@@ -862,11 +862,12 @@ def test_feed_edit_page_shows_radios_and_global_patterns_box(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/feeds/1").text
 
-    # six radios: three for filter_ads, three for ad_patterns_mode
-    assert page.count('type="radio"') == 6
+    # nine radios: three for respect_language, three for filter_ads, three for ad_patterns_mode
+    assert page.count('type="radio"') == 9
     assert 'name="filter_ads"' in page
     assert 'name="ad_patterns_mode"' in page
     assert 'name="ad_title_patterns"' in page
+    assert 'name="respect_language"' in page
     # unsaved feed defaults to "inherit" (value="") for both groups
     assert 'name="filter_ads" value="" checked' in page
     assert 'name="filter_ads" value="1" checked' not in page
@@ -874,6 +875,9 @@ def test_feed_edit_page_shows_radios_and_global_patterns_box(monkeypatch):
     assert 'name="ad_patterns_mode" value="" checked' in page
     assert 'name="ad_patterns_mode" value="1" checked' not in page
     assert 'name="ad_patterns_mode" value="0" checked' not in page
+    assert 'name="respect_language" value="" checked' in page
+    assert 'name="respect_language" value="1" checked' not in page
+    assert 'name="respect_language" value="0" checked' not in page
     # read-only global patterns box shows the global text
     assert 'class="mono global-box"' in page
     assert "black friday" in page
@@ -906,7 +910,7 @@ def test_feed_edit_post_off_and_patterns_saved(monkeypatch):
 
         # the edit page reflects what was just saved
         page = c.get("/feeds/1").text
-        assert page.count('type="radio"') == 6
+        assert page.count('type="radio"') == 9
         assert 'name="filter_ads" value="0" checked' in page
         assert 'name="filter_ads" value="" checked' not in page
         assert 'name="ad_patterns_mode" value="1" checked' in page
@@ -997,6 +1001,48 @@ def test_feed_edit_post_inherit_stores_null(monkeypatch):
     assert row["ad_title_patterns"] is None
 
 
+def test_feed_edit_post_respect_language_off_saved(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post(
+            "/feeds/1",
+            data={
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "ad_title_patterns": "",
+                "respect_language": "0",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/?msg=Saved"
+
+        with db() as conn:
+            row = conn.execute("SELECT respect_language FROM feeds WHERE id = 1").fetchone()
+        assert row["respect_language"] == 0
+
+        page = c.get("/feeds/1").text
+        assert 'name="respect_language" value="0" checked' in page
+
+
+def test_feed_edit_post_respect_language_unknown_choice_rejected(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post(
+            "/feeds/1",
+            data={
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "ad_title_patterns": "",
+                "respect_language": "7",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303 and resp.headers["location"].startswith("/feeds/1?err=")
+
+
 def test_feed_edit_page_404_for_unknown_feed():
     with TestClient(app) as c:
         resp = c.get("/feeds/999")
@@ -1020,7 +1066,7 @@ def test_index_has_edit_filters_link_to_feed(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/").text
     assert 'action="/feeds/1"' in page
-    assert "Edit filters" in page
+    assert _label("Edit") in page
     assert page.count("/feeds/1/poll") == 1
 
 
@@ -1040,7 +1086,7 @@ def test_feed_edit_post_unknown_choice_rejected(monkeypatch):
 
 def test_index_copy_sits_inside_output_url_cell_and_actions_stay_on_one_line(monkeypatch):
     """Copy shares the Output URL cell, right after the URL; the actions cell holds exactly
-    Edit filters, Poll now, Delete in that order and is styled never to wrap."""
+    Edit, Poll now, Delete in that order and is styled never to wrap."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
@@ -1072,7 +1118,7 @@ def test_index_copy_sits_inside_output_url_cell_and_actions_stay_on_one_line(mon
     assert cell.count("<button") == 3
     assert _label("Copy") not in cell and "pintxosCopy" not in cell
     assert "actions-row" not in page
-    order = [cell.index(_label(label)) for label in ("Edit filters", "Poll now", "Delete")]
+    order = [cell.index(_label(label)) for label in ("Edit", "Poll now", "Delete")]
     assert order == sorted(order)
     assert page.count("/feeds/1/poll") == 1
 
@@ -1100,7 +1146,7 @@ def test_table_buttons_carry_feather_icons_for_narrow_screens(monkeypatch):
         assert 'aria-hidden="true"' in svg_tag
 
     assert 'aria-label="Copy output URL"' in row
-    assert 'aria-label="Edit filters"' in row
+    assert 'aria-label="Edit"' in row
     assert 'aria-label="Poll now"' in row
     assert 'aria-label="Delete feed"' in row
     assert "ico-done" in row
@@ -1183,7 +1229,7 @@ def test_feed_edit_radios_keep_their_controls(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/feeds/1").text
 
-    assert page.count('type="radio"') == 6
+    assert page.count('type="radio"') == 9
     assert ".field input, .field textarea { width: 100%; }" not in page
     assert "accent-color: var(--accent)" in page
 
@@ -1193,7 +1239,7 @@ def test_feed_edit_page_says_global_linked_to_settings(monkeypatch):
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/feeds/1").text
-        assert page.count('<a href="/settings">Global</a>') == 2
+        assert page.count('<a href="/settings">Global</a>') == 3
         assert "Inherit" not in page
 
 
@@ -1808,7 +1854,12 @@ def test_retry_fallback_updates_row_in_place_on_success_or_records_auth_on_failu
     if fetch_ok:
         monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
         monkeypatch.setattr(
-            poll, "summarize", lambda text, original_title, url: ("New Headline", "New summary")
+            poll,
+            "summarize",
+            lambda text, original_title, url, respect_language=None: (
+                "New Headline",
+                "New summary",
+            ),
         )
     else:
         monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
@@ -1842,7 +1893,7 @@ def test_retry_fallback_error_paths(monkeypatch, error):
 
     calls = []
 
-    def fake_summarize(text, original_title, url):
+    def fake_summarize(text, original_title, url, respect_language=None):
         calls.append(url)
         if error == "missing_api_key":
             raise MissingApiKey("ANTHROPIC_API_KEY not set")

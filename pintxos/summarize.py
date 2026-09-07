@@ -78,9 +78,16 @@ def _parse(raw: str) -> tuple[str, str]:
     return headline, summary
 
 
-def summarize(text: str, original_title: str, url: str) -> tuple[str, str]:
-    """Return (headline, summary) for the given article text."""
-    respect_language = is_truthy(get_setting("PINTXOS_RESPECT_LANGUAGE"))
+def summarize(
+    text: str, original_title: str, url: str, respect_language: bool | None = None
+) -> tuple[str, str]:
+    """Return (headline, summary) for the given article text.
+
+    `respect_language`, when given, overrides the global PINTXOS_RESPECT_LANGUAGE
+    setting (e.g. with a per-feed choice); None (the default) falls back to it.
+    """
+    if respect_language is None:
+        respect_language = is_truthy(get_setting("PINTXOS_RESPECT_LANGUAGE"))
     rule = LANGUAGE_RULE_ON if respect_language else LANGUAGE_RULE_OFF
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(rule=rule)
 

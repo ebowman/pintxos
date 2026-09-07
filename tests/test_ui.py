@@ -1854,7 +1854,12 @@ def test_retry_fallback_updates_row_in_place_on_success_or_records_auth_on_failu
     if fetch_ok:
         monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
         monkeypatch.setattr(
-            poll, "summarize", lambda text, original_title, url: ("New Headline", "New summary")
+            poll,
+            "summarize",
+            lambda text, original_title, url, respect_language=None: (
+                "New Headline",
+                "New summary",
+            ),
         )
     else:
         monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
@@ -1888,7 +1893,7 @@ def test_retry_fallback_error_paths(monkeypatch, error):
 
     calls = []
 
-    def fake_summarize(text, original_title, url):
+    def fake_summarize(text, original_title, url, respect_language=None):
         calls.append(url)
         if error == "missing_api_key":
             raise MissingApiKey("ANTHROPIC_API_KEY not set")

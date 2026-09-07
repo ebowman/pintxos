@@ -122,7 +122,7 @@ def _items_cell(page: str, feed_id: int) -> str:
     row_start = page.index(f'<tr id="feed-{feed_id}"')
     row_end = page.index("</tr>", row_start)
     row = page[row_start:row_end]
-    start = row.index('<td class="copy">')
+    start = row.index('<td class="output">')
     start = row.index("</td>", start) + len("</td>")
     end = row.index('<td class="muted nowrap"', start)
     return row[start:end]
@@ -878,22 +878,33 @@ def test_feed_edit_post_unknown_choice_rejected(monkeypatch):
             assert conn.execute("SELECT filter_ads FROM feeds WHERE id = 1").fetchone()[0] is None
 
 
-def test_index_copy_has_own_column_and_actions_stay_on_one_line(monkeypatch):
-    """Copy sits in its own cell right after Output URL; the actions cell holds exactly
+def test_index_copy_sits_inside_output_url_cell_and_actions_stay_on_one_line(monkeypatch):
+    """Copy shares the Output URL cell, right after the URL; the actions cell holds exactly
     Edit filters, Poll now, Delete in that order and is styled never to wrap."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/").text
 
-    # Copy cell immediately follows the output-url cell (only whitespace between them).
-    url_start = page.index('<td><span class="output-url">')
-    url_end = page.index("</td>", url_start) + len("</td>")
-    copy_start = page.index('<td class="copy">')
-    assert page[url_end:copy_start].strip() == ""
-    copy_cell = page[copy_start : page.index("</td>", copy_start)]
-    assert "pintxosCopy(this, " in copy_cell
-    assert ">Copy<" in copy_cell
+    # One cell holds the URL span (with the full URL in its tooltip) and then the Copy button.
+    cell_start = page.index('<td class="output">')
+    cell = page[cell_start : page.index("</td>", cell_start)]
+    assert 'class="output-url"' in cell
+    assert 'title="http://testserver/feeds/1.xml"' in cell
+    assert "pintxosCopy(this, " in cell
+    assert ">Copy<" in cell
+    assert cell.index('class="output-url"') < cell.index("pintxosCopy(this, ")
+    # One cell, one line: no break and no second cell opens before this one closes.
+    assert "<br" not in cell
+    assert "<td" not in cell[len('<td class="output">') :]
+    assert '<td class="copy">' not in page
+
+    # String guards: the URL ellipsises instead of wrapping, and disappears when too narrow.
+    rule_start = page.index("\n    .output-url {")
+    rule = page[rule_start : page.index("}", rule_start)]
+    assert "white-space: nowrap;" in rule
+    assert "text-overflow: ellipsis;" in rule
+    assert "@container (max-width: 10rem) { .output-url { display: none; } }" in page
 
     # Actions cell: exactly the three buttons, in order, no Copy, no wrapping container.
     start = page.index('<td class="actions">')
@@ -910,16 +921,16 @@ def test_index_copy_has_own_column_and_actions_stay_on_one_line(monkeypatch):
 
 
 def test_index_colgroup_widths_sum_to_100_percent(monkeypatch):
-    """Seven fixed columns budgeted to fit 968px (1000px viewport) without scroll."""
+    """Six fixed columns budgeted to fit 968px (1000px viewport) without scroll."""
     monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
     with TestClient(app) as c:
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/").text
 
     widths = [int(w) for w in re.findall(r'<col style="width: (\d+)%">', page)]
-    assert len(widths) == 7
+    assert len(widths) == 6
     assert sum(widths) == 100
-    assert page.count("<th>") == 7
+    assert page.count("<th>") == 6
     assert "<th>Status</th>" in page
     assert "<th>Last error</th>" not in page
 
@@ -927,7 +938,7 @@ def test_index_colgroup_widths_sum_to_100_percent(monkeypatch):
 def test_index_empty_state_colspan_matches_columns():
     with TestClient(app) as c:
         page = c.get("/").text
-    assert '<td colspan="7" class="empty">' in page
+    assert '<td colspan="6" class="empty">' in page
 
 
 def test_feed_edit_radios_keep_their_controls(monkeypatch):
@@ -1277,10 +1288,10 @@ def test_index_items_cell_no_longer_shows_login_indicator_counts(monkeypatch):
     assert "need login" not in items_cell
     assert "login failed" not in items_cell
 
-    # No new column: still 7 <th>s, 7 <col> widths.
+    # No new column: still 6 <th>s, 6 <col> widths.
     widths = re.findall(r'<col style="width: (\d+)%">', page)
-    assert len(widths) == 7
-    assert page.count("<th>") == 7
+    assert len(widths) == 6
+    assert page.count("<th>") == 6
 
 
 def test_status_cell_shows_paywalled_with_tooltip_and_settings_link(monkeypatch):

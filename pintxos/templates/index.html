@@ -10,16 +10,15 @@
 
 <div class="table-wrap">
   <table>
-    <!-- Widths are budgeted against a 968px table (1000px viewport - 2rem body padding);
-         every column is wider than its widest unbreakable content, and the actions column
-         holds Edit filters / Poll now / Delete on one line. The poll button carries the
-         poll state (Polling… / Failed) with the detail in its tooltip, so there is no
-         Status column. See pintxos-gno.9 and pintxos-gno.11.
+    <!-- Six columns: Feed / Output URL / Items / Last polled / Status / actions. Widths are
+         budgeted against a 968px table (1000px viewport - 2rem body padding); the actions
+         column holds Edit filters / Poll now / Delete on one line. Copy has no column of its
+         own: the Output URL column carries the URL and the Copy button on one line, the URL
+         ellipsising to fit. See pintxos-gno.9, pintxos-gno.11 and pintxos-vxg.1.
          Actions at 968px: 72 + 88 (poll min-width) + 52 + gaps ≈18 + padding 12 ≈ 242 ≤ 26% = 252. -->
     <colgroup>
       <col style="width: 17%">
-      <col style="width: 17%">
-      <col style="width: 10%">
+      <col style="width: 27%">
       <col style="width: 9%">
       <col style="width: 11%">
       <col style="width: 10%">
@@ -29,7 +28,6 @@
       <tr>
         <th>Feed</th>
         <th>Output URL</th>
-        <th></th>
         <th>Items</th>
         <th>Last polled</th>
         <th>Status</th>
@@ -40,7 +38,7 @@
       {% for feed in feeds %}
       {% include "_feed_row.html" %}
       {% else %}
-      <tr><td colspan="7" class="empty">No feeds yet — add one above.</td></tr>
+      <tr><td colspan="6" class="empty">No feeds yet — add one above.</td></tr>
       {% endfor %}
     </tbody>
   </table>

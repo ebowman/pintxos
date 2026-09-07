@@ -5,8 +5,7 @@
     <div>{{ feed.title or feed.url }}</div>
     <div class="muted url">{{ feed.url }}</div>
   </td>
-  <td><span class="output-url">{{ feed.output_url }}</span></td>
-  <td class="copy"><button type="button" class="btn-tint-accent btn-copy" onclick="pintxosCopy(this, '{{ feed.output_url }}')">Copy</button></td>
+  <td class="output"><div class="output-wrap"><span class="output-url" title="{{ feed.output_url }}">{{ feed.output_url }}</span><button type="button" class="btn-tint-accent btn-copy" onclick="pintxosCopy(this, '{{ feed.output_url }}')">Copy</button></div></td>
   <td>
     <div>{{ feed.item_count }}</div>
     <div class="muted">{% if feed.ads_filtered %}{{ feed.ads_filtered }} ad{{ "" if feed.ads_filtered == 1 else "s" }} skipped{% endif %}</div>

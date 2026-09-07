@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Edit feed · Pintxøs{% endblock %}
 {% block content %}
-<h1>{{ feed.title or feed.url }}</h1>
-<div class="muted url">{{ feed.url }}</div>
 <form class="filters" method="post" action="/feeds/{{ feed.id }}">
+  <div class="title-edit">
+    <h1 id="feed-title-display">{{ feed.title or feed.url }}</h1>
+    <button type="button" id="feed-title-edit-btn" class="btn-tint-neutral" aria-label="Edit title" title="Edit title" onclick="document.getElementById('feed-title-display').hidden = true; this.hidden = true; var i = document.getElementById('feed-title-input'); i.hidden = false; i.focus(); document.getElementById('feed-title-note').hidden = false;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>
+    <input type="text" id="feed-title-input" name="title" maxlength="200" value="{{ feed.title or '' }}" placeholder="Feed title" hidden>
+  </div>
+  <div class="muted" id="feed-title-note" hidden>Leave blank to use the feed's own title.</div>
+  <div class="muted url">{{ feed.url }}</div>
   <fieldset class="field">
     <legend>Language</legend>
     <div class="radios">

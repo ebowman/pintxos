@@ -132,6 +132,16 @@
     @media (prefers-reduced-motion: reduce) { .btn-polling, .btn-polling:hover { animation: none; } }
     .cancel { margin-left: 0.75rem; color: var(--text-muted); font-size: 0.875rem; }
 
+    /* Feed title on the Edit page: heading + pencil on one line; the input, once revealed,
+       takes the heading's place and matches its width. */
+    .title-edit { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.25rem; }
+    .title-edit h1 { margin: 0; }
+    .title-edit button { padding: 0.3rem; line-height: 1; }
+    .title-edit input[type=text] { font-size: 1.25rem; font-weight: 600; padding: 0.15rem 0.4rem; flex: 1 1 auto; max-width: 30rem; }
+    /* Outside a table the only .ico sizing rule (table button .ico) doesn't apply, so the
+       pencil SVG would fall back to its 300x150 default; size and show it explicitly. */
+    .title-edit .ico { display: inline-block; width: 1em; height: 1em; vertical-align: -0.15em; }
+
     .flash, .msg {
       font-size: 0.9375rem;
       padding: 0.625rem 0.875rem;

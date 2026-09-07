@@ -1,5 +1,7 @@
 # Pintxøs – Bite-sized, honest RSS feeds.
 
+[![build](https://github.com/janw76/pintxos/actions/workflows/docker.yml/badge.svg)](https://github.com/janw76/pintxos/actions/workflows/docker.yml)
+
 **Garbage in, sanity out.**
 
 Pintxøs grabs an RSS feed and republishes its articles as a new feed with neutral headlines and factual, ≤100-word summaries. No more clickbait or ragebait. Just plain facts.

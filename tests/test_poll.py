@@ -1223,6 +1223,9 @@ def test_get_paces_requests_to_same_host(
         ("a, b", ["a", "b"]),
         ("", [""]),
         ("safari17_0", ["safari17_0"]),
+        ("a,,b", ["a", "b"]),
+        ("a, ", ["a"]),
+        (" , ", [""]),
     ],
 )
 def test_parse_profiles(value, expected):

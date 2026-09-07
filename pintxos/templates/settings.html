@@ -35,7 +35,7 @@
   </div>
   <div class="field field-checkbox">
     <label><input type="checkbox" name="respect_language" value="1" {% if respect_language_on %}checked{% endif %} {% if respect_language_env %}disabled{% endif %}> Respect original language</label>
-    <div class="muted">Headline and summary are written in the article's language. Turn off to always summarize in English. Appended full text always stays in the original language.</div>
+    <div class="muted">Headline and summary are written in the article's language. Turn off to always summarize in English. Appended full text always stays in the original language. Feeds can override this on their Edit page.</div>
     {% if respect_language_env %}<div class="muted">Set by PINTXOS_RESPECT_LANGUAGE in the environment.</div>{% endif %}
   </div>
 

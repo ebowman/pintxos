@@ -17,7 +17,7 @@
     {% with fetch_status=feed.fetch_status %}{% include "_fetch_status.html" %}{% endwith %}
   </td>
   <td class="actions">
-    <form method="get" action="/feeds/{{ feed.id }}"><button type="submit" class="btn-tint-neutral" aria-label="Edit filters" title="Edit filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg><span class="label">Edit filters</span></button></form>
+    <form method="get" action="/feeds/{{ feed.id }}"><button type="submit" class="btn-tint-neutral" aria-label="Edit" title="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg><span class="label">Edit</span></button></form>
     {#- The poll button carries the poll state: idle / active (pulse, progress in tooltip) / failed (error in tooltip). #}
     <form method="post" action="/feeds/{{ feed.id }}/poll">
       {%- if feed.id in status -%}

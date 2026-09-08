@@ -28,6 +28,15 @@ Same story, no guessing games. Sanity restored. Point Pintxøs at a feed once, a
 
 ![Screenshot of Pintxøs](docs/pintxøs_screernshot.webp)
 
+### Additional features
+
+- **Ad filtering.** Skip deal posts, coupons and sponsored entries before they reach your feed. Built-in rules cover the usual "60% off" and promo-code posts. The feed's Edit page shows what the last poll dropped and why.
+- **Keyword filtering.** Block or keep entries by title, globally or per feed, e.g. drop everything mentioning `cricket` or `horoscope`. Supports regular expressions.
+- **Full text inline.** The whole article is appended below the summary, so you can read it in your feed reader without opening the site.
+- **English summaries of foreign-language feeds.** By default headlines and summaries stay in the article's language. Turn that off, globally or per feed, to always get English.
+- **Paywalled sites.** Paste your browser's cookies for sites you subscribe to and Pintxøs reads the full article instead of the teaser. Each feed shows whether the login worked.
+- **Word count and reading time** on every item, so you know what you are clicking into.
+
 ## How it works
 
 1. Poll each subscribed feed on a schedule.

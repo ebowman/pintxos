@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 import curl_cffi.requests
+import feedparser
 import pytest
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -537,6 +538,51 @@ def test_retry_fallback_failure_leaves_text_unchanged(feed_id, monkeypatch):
     rows = items()
     assert [row["id"] for row in rows] == [item_id]
     assert rows[0]["text"] == "original text"
+
+
+def test_retry_fallback_merges_page_labels_with_existing(feed_id, monkeypatch):
+    """A successful retry-fetch folds its fresh page labels into whatever the item
+    already had: existing entries first, deduped, in order."""
+    item_id = _seed_fallback_item(feed_id)
+    with db() as conn:
+        conn.execute(
+            "UPDATE items SET labels = ? WHERE id = ?",
+            (json.dumps(["World News", "Sport"]), item_id),
+        )
+    monkeypatch.setattr(
+        poll, "fetch_article",
+        lambda link: ("FULL ARTICLE TEXT " * 20, "ok", ["Sport", "Cricket"]),
+    )
+    monkeypatch.setattr(
+        poll, "summarize", lambda text, title, url, respect_language=None: ("New", "New summary")
+    )
+
+    poll.retry_fallback(feed_id)
+
+    rows = items()
+    assert [row["id"] for row in rows] == [item_id]
+    assert json.loads(rows[0]["labels"]) == ["World News", "Sport", "Cricket"]
+
+
+def test_retry_fallback_keeps_existing_labels_when_refetch_yields_none(feed_id, monkeypatch):
+    """When the re-fetched page has no publisher-label metadata, the item's existing
+    labels are kept unchanged."""
+    item_id = _seed_fallback_item(feed_id)
+    with db() as conn:
+        conn.execute(
+            "UPDATE items SET labels = ? WHERE id = ?",
+            (json.dumps(["World News", "Sport"]), item_id),
+        )
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
+    monkeypatch.setattr(
+        poll, "summarize", lambda text, title, url, respect_language=None: ("New", "New summary")
+    )
+
+    poll.retry_fallback(feed_id)
+
+    rows = items()
+    assert [row["id"] for row in rows] == [item_id]
+    assert json.loads(rows[0]["labels"]) == ["World News", "Sport"]
 
 
 def _seed_blocked_items(feed_id, n, start_guid=1, host="example.com"):
@@ -1579,3 +1625,53 @@ def test_poll_dedupes_labels_case_insensitively_keeping_first_seen_casing(feed_i
     assert len(rows) == 1
     assert rows[0]["fetch_status"] == "ok"
     assert json.loads(rows[0]["labels"]) == ["Sport"]
+
+
+# --- article_input: the public capture point for pintxos's summarize() input -----
+
+
+def test_article_input_uses_fetched_article_text(monkeypatch):
+    """A successful fetch wins: fallback/title_only are both False, the text is
+    exactly what was extracted, and the labels include the fetched page's labels."""
+    entry = feedparser.parse(SAMPLE).entries[0]
+    monkeypatch.setattr(
+        poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", ["Cricket"])
+    )
+
+    article = poll.article_input(entry, None)
+
+    assert article.fallback is False
+    assert article.title_only is False
+    assert article.text == "FULL ARTICLE TEXT " * 20
+    assert article.labels == ["Cricket"]
+    assert article.fetch_status == "ok"
+    assert article.title == "First article about a rocket launch"
+    assert article.link == "https://example.com/one"
+
+
+def test_article_input_falls_back_to_feed_excerpt_when_fetch_fails(monkeypatch):
+    """When the fetch fails but the feed's own excerpt is long enough, that excerpt
+    is used as the text and fallback (but not title_only) is set."""
+    entry = feedparser.parse(SAMPLE).entries[0]  # content:encoded is well over MIN_FALLBACK_CHARS
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
+
+    article = poll.article_input(entry, None)
+
+    assert article.fallback is True
+    assert article.title_only is False
+    assert "ENCODED BODY" in article.text
+    assert article.fetch_status == "error"
+    assert article.word_count is None
+
+
+def test_article_input_falls_back_to_title_when_excerpt_too_short(monkeypatch):
+    """When the fetch fails and the feed's own excerpt is too short, the title alone
+    is used as the text and title_only is set."""
+    entry = feedparser.parse(SAMPLE).entries[2]  # "tiny" description
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
+
+    article = poll.article_input(entry, None)
+
+    assert article.fallback is True
+    assert article.title_only is True
+    assert article.text == "Third article with almost no body text at all"

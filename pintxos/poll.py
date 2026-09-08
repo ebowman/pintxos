@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http.cookiejar import MozillaCookieJar
 from urllib.parse import urlparse
@@ -118,17 +119,17 @@ def _page_labels(html: str) -> list[str]:
     """
     try:
         meta = trafilatura.extract_metadata(html)
+        if meta is None:
+            return []
+        labels: list[str] = []
+        for value in (meta.categories or []) + (meta.tags or []):
+            for part in (value or "").split(","):
+                part = part.strip()
+                if part:
+                    labels.append(part)
+        return labels
     except Exception:
         return []
-    if meta is None:
-        return []
-    labels: list[str] = []
-    for value in (meta.categories or []) + (meta.tags or []):
-        for part in (value or "").split(","):
-            part = part.strip()
-            if part:
-                labels.append(part)
-    return labels
 
 
 def fetch_article(link: str) -> tuple[str | None, str, list[str]]:
@@ -269,7 +270,7 @@ def _rss_labels(entry) -> list[str]:
     """This entry's RSS <category> terms, original case, in feed order."""
     labels = []
     for tag in entry.get("tags") or []:
-        term = tag.get("term")
+        term = (tag.get("term") or "").strip()
         if term:
             labels.append(term)
     return labels
@@ -288,6 +289,57 @@ def _dedupe_labels(labels: list[str]) -> list[str]:
         if len(result) >= MAX_LABELS:
             break
     return result
+
+
+@dataclass
+class ArticleInput:
+    """The text and metadata pintxos hands to `summarize()` for one feed entry, plus
+    the fetch bookkeeping poll_feed stores alongside it."""
+
+    title: str
+    link: str
+    labels: list[str]
+    text: str
+    fetch_status: str
+    auth: str | None
+    word_count: int | None
+    fallback: bool
+    title_only: bool
+
+
+def article_input(entry, jar: MozillaCookieJar | None) -> ArticleInput:
+    """Build the exact input pintxos summarizes for one feed entry: fetch the full
+    article, falling back to the feed's own excerpt when the fetch fails and then to
+    the title alone when even that excerpt is too short, plus the labels (this
+    entry's RSS categories combined with the fetched page's own metadata) and the
+    auth/fetch_status/word_count bookkeeping poll_feed stores alongside it. This is
+    the single input-construction path pintxos uses before calling `summarize()`;
+    external tools (e.g. a training-corpus capture script) that need identical
+    parsing should call this too, so their input matches pintxos's runtime input.
+    """
+    title = entry.get("title", "")
+    link = entry.get("link") or entry.get("id") or ""
+    text, auth, words, fetch_status, page_labels = _fetch_and_auth(link, jar)
+    labels = _dedupe_labels(_rss_labels(entry) + page_labels)
+    fallback = False
+    title_only = False
+    if text is None:
+        fallback = True
+        text = _entry_text(entry)
+        if len(text) < MIN_FALLBACK_CHARS:
+            text = title
+            title_only = True
+    return ArticleInput(
+        title=title,
+        link=link,
+        labels=labels,
+        text=text,
+        fetch_status=fetch_status,
+        auth=auth,
+        word_count=words,
+        fallback=fallback,
+        title_only=title_only,
+    )
 
 
 def _merge_labels(existing_json: str | None, new_labels: list[str]) -> str | None:
@@ -380,26 +432,17 @@ def poll_feed(feed_id: int) -> bool:
         jar = get_jar()
         total = len(kept)
         for i, (guid, link, entry) in enumerate(kept, 1):
-            original_title = entry.get("title", "")
             # Word count only when we actually read the article, on the full extracted
             # text (before summarize() truncates it); fallback items stay NULL.
-            text, auth, words, fetch_status, page_labels = _fetch_and_auth(link, jar)
-            labels = _dedupe_labels(_rss_labels(entry) + page_labels)
-            labels_json = json.dumps(labels) if labels else None
-            fallback = 0
-            title_only = False
-            if text is None:
-                fallback = 1
-                text = _entry_text(entry)
-                if len(text) < MIN_FALLBACK_CHARS:
-                    text = original_title
-                    title_only = True
+            article = article_input(entry, jar)
+            original_title = article.title
+            labels_json = json.dumps(article.labels) if article.labels else None
 
             log.info("summarizing %s", link)
             _status[feed_id] = f"Summarizing {i}/{total}"
             try:
                 headline, summary = summarize(
-                    text, original_title, link, respect_language=respect_language
+                    article.text, original_title, link, respect_language=respect_language
                 )
             except MissingApiKey:
                 log.error("ANTHROPIC_API_KEY not set, stopping poll")
@@ -417,8 +460,9 @@ def poll_feed(feed_id: int) -> bool:
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         feed_id, guid, link or "", original_title, _published_at(entry),
-                        headline, summary, fallback, words, auth, fetch_status,
-                        None if title_only else text, now(), labels_json,
+                        headline, summary, int(article.fallback), article.word_count,
+                        article.auth, article.fetch_status,
+                        None if article.title_only else article.text, now(), labels_json,
                     ),
                 )
 

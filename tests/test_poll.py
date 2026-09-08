@@ -62,7 +62,7 @@ def calls(monkeypatch):
         return f"HEADLINE {len(seen)}", f"summary of {original_title}"
 
     monkeypatch.setattr(poll, "_get", fake_get)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
     monkeypatch.setattr(poll, "summarize", fake_summarize)
     return seen
 
@@ -82,7 +82,7 @@ def calls_with_ad(monkeypatch):
         return f"HEADLINE {len(seen)}", f"summary of {original_title}"
 
     monkeypatch.setattr(poll, "_get", fake_get)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
     monkeypatch.setattr(poll, "summarize", fake_summarize)
     return seen
 
@@ -144,14 +144,14 @@ def test_fallback_uses_feed_content(feed_id, calls):
 
 
 def test_article_text_wins_over_feed_content(feed_id, calls, monkeypatch):
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     poll.poll_all()
     assert all(row["fallback"] == 0 for row in items())
     assert all(text.startswith("FULL ARTICLE TEXT") for text, _t, _u in calls)
 
 
 def test_fetched_article_stores_word_count(feed_id, calls, monkeypatch):
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("one two three " * 50, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("one two three " * 50, "ok", []))
     poll.poll_feed(feed_id)
     with db() as conn:
         rows = conn.execute("SELECT word_count FROM items").fetchall()
@@ -170,7 +170,7 @@ def test_fallback_item_has_null_word_count(feed_id, calls):
 
 def test_fetched_article_text_stored_with_newlines(feed_id, calls, monkeypatch):
     article_text = "Paragraph one.\n\nParagraph two.\n\n" + "padding " * 30
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (article_text, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (article_text, "ok", []))
     poll.poll_feed(feed_id)
     rows = items()
     assert rows
@@ -366,14 +366,14 @@ def test_status_cleared_after_poll(feed_id, calls, monkeypatch):
 def test_fetch_article_extracts_html(monkeypatch):
     html = "<html><body><article><p>" + "Real body sentence. " * 30 + "</p></article></body></html>"
     monkeypatch.setattr(poll, "_get", lambda url: FakeResponse(html.encode(), content_type="text/html; charset=utf-8"))
-    text, status = poll.fetch_article("https://example.com/one")
+    text, status, _labels = poll.fetch_article("https://example.com/one")
     assert "Real body sentence." in text
     assert status == "ok"
 
 
 def test_fetch_article_rejects_non_html(monkeypatch):
     monkeypatch.setattr(poll, "_get", lambda url: FakeResponse(b"{}", content_type="application/json"))
-    assert poll.fetch_article("https://example.com/one") == (None, "error")
+    assert poll.fetch_article("https://example.com/one") == (None, "error", [])
 
 
 # --- fetch_status classification --------------------------------------------------
@@ -405,7 +405,7 @@ def test_fetch_article_classifies_outcome(
         "_get",
         lambda url: FakeResponse(body.encode(), status_code=status_code, content_type=content_type),
     )
-    text, status = poll.fetch_article("https://example.com/one")
+    text, status, _labels = poll.fetch_article("https://example.com/one")
     assert status == expected_status
     if expected_status == "ok":
         assert "Real body sentence." in text
@@ -418,11 +418,11 @@ def test_fetch_article_request_failure_is_an_error(monkeypatch):
         raise RuntimeError("connection reset")
 
     monkeypatch.setattr(poll, "_get", boom)
-    assert poll.fetch_article("https://example.com/one") == (None, "error")
+    assert poll.fetch_article("https://example.com/one") == (None, "error", [])
 
 
 def test_poll_feed_stores_fetch_status_ok_for_fetched_items(feed_id, calls, monkeypatch):
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     poll.poll_feed(feed_id)
     rows = items()
     assert rows
@@ -431,7 +431,7 @@ def test_poll_feed_stores_fetch_status_ok_for_fetched_items(feed_id, calls, monk
 
 
 def test_poll_feed_stores_fetch_status_for_fallback_items(feed_id, calls, monkeypatch):
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "teaser"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "teaser", []))
     poll.poll_feed(feed_id)
     rows = items()
     assert rows
@@ -450,7 +450,7 @@ def _seed_fallback_item(feed_id, guid="guid-1", link="https://example.com/one") 
 
 def test_retry_fallback_sets_fetch_status_ok_on_success(feed_id, monkeypatch):
     item_id = _seed_fallback_item(feed_id)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     monkeypatch.setattr(poll, "summarize", lambda text, title, url, respect_language=None: ("New", "New summary"))
 
     poll.retry_fallback(feed_id)
@@ -464,7 +464,7 @@ def test_retry_fallback_sets_fetch_status_ok_on_success(feed_id, monkeypatch):
 
 def test_retry_fallback_records_fetch_status_on_repeat_failure(feed_id, monkeypatch):
     item_id = _seed_fallback_item(feed_id)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "blocked"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "blocked", []))
 
     def boom_summarize(*_args, **_kwargs):
         raise AssertionError("summarize should not be called when the fetch fails")
@@ -489,7 +489,7 @@ def test_retry_fallback_updates_fetch_status_when_summarize_fails(feed_id, monke
             "UPDATE items SET fetch_status = ?, auth = ? WHERE id IN (?, ?)",
             ("blocked", "missing", item_id, second_id),
         )
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
 
     def boom_summarize(*_args, **_kwargs):
         raise SummarizeError("boom")
@@ -511,7 +511,7 @@ def test_retry_fallback_updates_fetch_status_when_summarize_fails(feed_id, monke
 def test_retry_fallback_success_writes_text(feed_id, monkeypatch):
     item_id = _seed_fallback_item(feed_id)
     fetched_text = "FULL ARTICLE TEXT " * 20
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (fetched_text, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (fetched_text, "ok", []))
     monkeypatch.setattr(poll, "summarize", lambda text, title, url, respect_language=None: ("New", "New summary"))
 
     poll.retry_fallback(feed_id)
@@ -529,7 +529,7 @@ def test_retry_fallback_failure_leaves_text_unchanged(feed_id, monkeypatch):
     def boom_summarize(*_args, **_kwargs):
         raise AssertionError("summarize should not be called when the fetch fails")
 
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "blocked"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "blocked", []))
     monkeypatch.setattr(poll, "summarize", boom_summarize)
 
     poll.retry_fallback(feed_id)
@@ -581,7 +581,7 @@ def test_poll_feed_retries_three_newest_blocked_items(
         conn.execute("UPDATE items SET fetch_status = 'teaser' WHERE id = ?", (teaser_id,))
     _mark_sample_guids_seen(feed_id)
 
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
 
     assert poll.poll_feed(feed_id) is True
@@ -632,7 +632,7 @@ def test_poll_feed_only_retries_blocked_items_on_hosts_with_cookies(
 
     def fetch_article(link):
         assert "other.com" not in link, "other.com has no cookies and must not be fetched"
-        return "FULL ARTICLE TEXT " * 20, "ok"
+        return "FULL ARTICLE TEXT " * 20, "ok", []
 
     monkeypatch.setattr(poll, "fetch_article", fetch_article)
     monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
@@ -668,7 +668,7 @@ def test_poll_feed_rotates_blocked_item_retries(feed_id, calls, monkeypatch, _re
 
     def fake_fetch_article(link):
         fetched.append(link)
-        return None, "blocked"
+        return None, "blocked", []
 
     monkeypatch.setattr(poll, "fetch_article", fake_fetch_article)
 
@@ -702,7 +702,7 @@ def test_poll_feed_wraps_retries_when_fewer_blocked_items_than_limit(
 
     def fake_fetch_article(link):
         fetched.append(link)
-        return None, "blocked"
+        return None, "blocked", []
 
     monkeypatch.setattr(poll, "fetch_article", fake_fetch_article)
 
@@ -720,7 +720,7 @@ def test_retry_fallback_button_path_retries_all_hosts_regardless_of_cookies(feed
     example_ids = _seed_blocked_items(feed_id, 2, host="example.com")
     other_ids = _seed_blocked_items(feed_id, 2, host="other.com")
 
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
 
     poll.retry_fallback(feed_id)
@@ -738,7 +738,7 @@ def test_retry_fallback_button_path_still_retries_all_blocked_items(feed_id, mon
     teaser_id = _seed_fallback_item(feed_id, guid="teaser-1", link="https://example.com/t1")
     with db() as conn:
         conn.execute("UPDATE items SET fetch_status = 'teaser' WHERE id = ?", (teaser_id,))
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
 
     poll.retry_fallback(feed_id)
@@ -754,7 +754,7 @@ def test_retry_fallback_restores_callers_status_instead_of_popping(feed_id, monk
     poll_feed does), it must restore that status afterwards rather than popping it,
     so the caller's own status survives the nested call."""
     _seed_blocked_items(feed_id, 1)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     monkeypatch.setattr(poll, "summarize", lambda text, title, url, **kwargs: ("H", "S"))
 
     poll._status[feed_id] = "Summarizing 2/3"
@@ -889,7 +889,7 @@ def test_extra_pattern_filters_entry_not_caught_by_builtin_rules(feed_id, monkey
         return "HEADLINE", f"summary of {original_title}"
 
     monkeypatch.setattr(poll, "_get", fake_get)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
     monkeypatch.setattr(poll, "summarize", fake_summarize)
     monkeypatch.setenv("PINTXOS_AD_TITLE_PATTERNS", "best .* deals")
 
@@ -949,7 +949,7 @@ def test_last_filtered_records_title_and_reason_for_wired_fixture(feed_id, monke
         return FakeResponse(WIRED)
 
     monkeypatch.setattr(poll, "_get", fake_get)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
     monkeypatch.setattr(
         poll, "summarize", lambda text, title, url, respect_language=None: ("H", f"summary of {title}")
     )
@@ -981,7 +981,7 @@ def _serve(monkeypatch, xml: bytes) -> list[str]:
         return "HEADLINE", f"summary of {original_title}"
 
     monkeypatch.setattr(poll, "_get", fake_get)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
     monkeypatch.setattr(poll, "summarize", fake_summarize)
     return seen
 
@@ -1052,7 +1052,7 @@ def test_poll_feed_falls_back_to_global_respect_language_when_unset(
 def test_retry_fallback_passes_feed_override_respect_language_false(feed_id, monkeypatch):
     set_feed(feed_id, respect_language=0)
     _seed_fallback_item(feed_id)
-    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok"))
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
     seen_kwargs = []
 
     def fake_summarize(text, original_title, url, respect_language=None):
@@ -1275,7 +1275,7 @@ def test_get_gives_up_after_all_challenge_attempts_reports_blocked(_reset_client
     monkeypatch.setattr(poll, "_clients", [fake])
     monkeypatch.setattr(poll.time, "sleep", lambda s: None)
 
-    text, status = poll.fetch_article("https://example.com/a")
+    text, status, _labels = poll.fetch_article("https://example.com/a")
 
     assert text is None
     assert status == "blocked"
@@ -1394,7 +1394,7 @@ def test_auth_outcome_from_cookies_presence_and_fetch_result(
     if cookies_present:
         write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
     if fetch_ok:
-        monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL TEXT " * 30, "ok"))
+        monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL TEXT " * 30, "ok", []))
     poll.poll_all()
     rows = items()
     assert len(rows) == 3
@@ -1431,7 +1431,7 @@ def test_authenticated_fetch_persists_rotated_cookie_to_disk(feed_id, calls, mon
             rest={},
         )
         jar.set_cookie(rotated)
-        return "FULL ARTICLE TEXT " * 30, "ok"
+        return "FULL ARTICLE TEXT " * 30, "ok", []
 
     monkeypatch.setattr(poll, "fetch_article", fake_fetch_article)
 
@@ -1459,3 +1459,123 @@ def test_failed_authenticated_fetch_does_not_rewrite_cookies_file(feed_id, calls
     assert all(row["auth"] == "failed" for row in rows)
     assert cookie_path().stat().st_mtime_ns == before_mtime_ns
     assert cookie_path().read_text() == before_content
+
+
+# --- publisher labels (RSS categories + page section/tags/keywords) --------------
+
+LABEL_ARTICLE_BODY = "Real body sentence. " * 20  # comfortably over MIN_ARTICLE_CHARS
+
+
+def _label_feed_xml(link: str, categories: list[str]) -> bytes:
+    """A one-item RSS feed whose entry carries the given <category> terms."""
+    cats = "".join(f"      <category>{c}</category>\n" for c in categories)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0"><channel><title>Label Feed</title>'
+        "<link>https://example.com/</link><description>desc</description>"
+        "<item>"
+        "<title>Cricket news roundup</title>"
+        f"<link>{link}</link>"
+        f"<guid>{link}</guid>"
+        "<pubDate>Mon, 01 Sep 2025 10:00:00 +0000</pubDate>"
+        f"{cats}"
+        "<description>teaser</description>"
+        "</item></channel></rss>"
+    ).encode()
+
+
+def _label_article_html(
+    section: str | None = None, tag: str | None = None, keywords: str | None = None
+) -> bytes:
+    """A minimal article page with the given publisher-label meta tags, long enough
+    for trafilatura to extract at least MIN_ARTICLE_CHARS of body text."""
+    meta = ""
+    if section is not None:
+        meta += f'<meta property="article:section" content="{section}">\n'
+    if tag is not None:
+        meta += f'<meta property="article:tag" content="{tag}">\n'
+    if keywords is not None:
+        meta += f'<meta name="keywords" content="{keywords}">\n'
+    return (
+        f"<html><head>{meta}</head><body><article><p>{LABEL_ARTICLE_BODY}"
+        "</p></article></body></html>"
+    ).encode()
+
+
+def test_poll_stores_rss_and_page_labels_in_order(feed_id, monkeypatch):
+    """Labels combine this entry's RSS <category> terms (original case, feed order)
+    with the fetched page's own metadata labels (categories then tags, each
+    comma-split), RSS first."""
+    link = "https://example.com/cricket"
+    feed_xml = _label_feed_xml(link, ["World News", "Breaking"])
+    article_html = _label_article_html(section="Sport", tag="Cricket", keywords="ashes, england")
+
+    def fake_get(url):
+        if url == FEED_URL:
+            return FakeResponse(feed_xml)
+        if url == link:
+            return FakeResponse(article_html, content_type="text/html; charset=utf-8")
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(poll, "_get", fake_get)
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, respect_language=None: ("H", "S"))
+
+    assert poll.poll_feed(feed_id) is True
+
+    rows = items()
+    assert len(rows) == 1
+    assert rows[0]["fetch_status"] == "ok"
+    assert json.loads(rows[0]["labels"]) == [
+        "World News", "Breaking", "Sport", "Cricket", "ashes", "england",
+    ]
+
+
+def test_poll_stores_null_labels_when_no_rss_tags_and_no_page_meta(feed_id, monkeypatch):
+    """An entry with no RSS categories, whose fetched page has no publisher-label
+    metadata, stores NULL -- not an empty JSON array -- even though the fetch itself
+    succeeds."""
+    link = "https://example.com/cricket"
+    feed_xml = _label_feed_xml(link, [])
+    article_html = _label_article_html()  # no section/tag/keywords meta
+
+    def fake_get(url):
+        if url == FEED_URL:
+            return FakeResponse(feed_xml)
+        if url == link:
+            return FakeResponse(article_html, content_type="text/html; charset=utf-8")
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(poll, "_get", fake_get)
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, respect_language=None: ("H", "S"))
+
+    assert poll.poll_feed(feed_id) is True
+
+    rows = items()
+    assert len(rows) == 1
+    assert rows[0]["fetch_status"] == "ok"
+    assert rows[0]["labels"] is None
+
+
+def test_poll_dedupes_labels_case_insensitively_keeping_first_seen_casing(feed_id, monkeypatch):
+    """The RSS category "Sport" and the page's lower-case "sport" section collapse
+    into a single label, keeping the RSS entry's casing because it was seen first."""
+    link = "https://example.com/cricket"
+    feed_xml = _label_feed_xml(link, ["Sport"])
+    article_html = _label_article_html(section="sport")
+
+    def fake_get(url):
+        if url == FEED_URL:
+            return FakeResponse(feed_xml)
+        if url == link:
+            return FakeResponse(article_html, content_type="text/html; charset=utf-8")
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(poll, "_get", fake_get)
+    monkeypatch.setattr(poll, "summarize", lambda text, title, url, respect_language=None: ("H", "S"))
+
+    assert poll.poll_feed(feed_id) is True
+
+    rows = items()
+    assert len(rows) == 1
+    assert rows[0]["fetch_status"] == "ok"
+    assert json.loads(rows[0]["labels"]) == ["Sport"]

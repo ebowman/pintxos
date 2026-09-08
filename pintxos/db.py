@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS items (
     fetch_status TEXT,
     text TEXT,
     created_at TEXT,
+    labels TEXT,
     UNIQUE(feed_id, guid)
 );
 
@@ -89,6 +90,9 @@ def connect() -> sqlite3.Connection:
         # The text handed to summarize(). NULL = no real text (row written before this
         # column existed, or the fallback text was only the entry title).
         ("text", "TEXT"),
+        # JSON array of publisher label strings (RSS categories + page section/tags/
+        # keywords). NULL = row written before this column existed, or nothing found.
+        ("labels", "TEXT"),
     ):
         if name not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")

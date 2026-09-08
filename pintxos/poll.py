@@ -29,6 +29,7 @@ log = logging.getLogger("pintxos")
 USER_AGENT = "pintxos/0.1 (+https://github.com/janw76/pintxos)"
 MIN_ARTICLE_CHARS = 200
 MIN_FALLBACK_CHARS = 50
+MAX_LABELS = 30
 
 
 def _make_client(profile: str | None) -> curl_cffi.requests.Session:
@@ -109,13 +110,36 @@ def _get(url: str) -> curl_cffi.requests.Response:
     return resp
 
 
-def fetch_article(link: str) -> tuple[str | None, str]:
-    """Full article text and why: (text, "ok"), or (None, reason) when it can't be read.
+def _page_labels(html: str) -> list[str]:
+    """Publisher labels from the page's own metadata: article:section/article:tag and
+    keywords (trafilatura's .categories/.tags), each comma-split, stripped, and with
+    empties dropped. Categories first, then tags, in their original order. Empty on
+    any failure -- this is a nice-to-have signal, not required for a successful fetch.
+    """
+    try:
+        meta = trafilatura.extract_metadata(html)
+    except Exception:
+        return []
+    if meta is None:
+        return []
+    labels: list[str] = []
+    for value in (meta.categories or []) + (meta.tags or []):
+        for part in (value or "").split(","):
+            part = part.strip()
+            if part:
+                labels.append(part)
+    return labels
+
+
+def fetch_article(link: str) -> tuple[str | None, str, list[str]]:
+    """Full article text and why: (text, "ok", labels), or (None, reason, []) when it
+    can't be read.
 
     The reason is "blocked" for HTTP 401, 403 or 429 (a paywall or a bot block),
     "teaser" when a 2xx HTML page yields less than MIN_ARTICLE_CHARS of extracted
     text, and "error" for everything else: a failed request, any other non-2xx
-    status, or a non-HTML content type.
+    status, or a non-HTML content type. `labels` is the page's own metadata labels
+    (see `_page_labels`); the caller combines it with the feed entry's RSS categories.
     """
     status = "error"
     try:
@@ -130,11 +154,12 @@ def fetch_article(link: str) -> tuple[str | None, str]:
         if not text or len(text) < MIN_ARTICLE_CHARS:
             status = "teaser"
             raise ValueError(f"extracted {len(text or '')} chars")
+        page_labels = _page_labels(resp.text)
     except Exception as e:
         log.info("article fetch failed, using feed content: %s (%s)", link, e)
-        return None, status
+        return None, status, []
     log.info("fetched article %s", link)
-    return text, "ok"
+    return text, "ok", page_labels
 
 
 def _strip_html(html: str) -> str:
@@ -220,13 +245,13 @@ def _keep_patterns(conn) -> list[re.Pattern]:
 
 def _fetch_and_auth(
     link: str, jar: MozillaCookieJar | None
-) -> tuple[str | None, str | None, int | None, str]:
-    """Fetch `link` and work out (text, auth, word_count, fetch_status) for it.
+) -> tuple[str | None, str | None, int | None, str, list[str]]:
+    """Fetch `link` and work out (text, auth, word_count, fetch_status, page_labels).
 
     An entry with no link is never fetched at all, which counts as "error".
     """
     had = bool(link) and jar is not None and has_cookies_for(jar, link)
-    text, fetch_status = fetch_article(link) if link else (None, "error")
+    text, fetch_status, page_labels = fetch_article(link) if link else (None, "error", [])
     words = word_count(text) if text is not None else None
     auth = None
     if text is None:
@@ -237,7 +262,41 @@ def _fetch_and_auth(
         # them in memory (Set-Cookie on the response). Persist the jar so a restart
         # doesn't replay the stale, possibly-invalidated tokens.
         save_jar(jar)
-    return text, auth, words, fetch_status
+    return text, auth, words, fetch_status, page_labels
+
+
+def _rss_labels(entry) -> list[str]:
+    """This entry's RSS <category> terms, original case, in feed order."""
+    labels = []
+    for tag in entry.get("tags") or []:
+        term = tag.get("term")
+        if term:
+            labels.append(term)
+    return labels
+
+
+def _dedupe_labels(labels: list[str]) -> list[str]:
+    """Case-insensitive de-dupe keeping first-seen casing and order, capped at MAX_LABELS."""
+    seen: set[str] = set()
+    result = []
+    for label in labels:
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(label)
+        if len(result) >= MAX_LABELS:
+            break
+    return result
+
+
+def _merge_labels(existing_json: str | None, new_labels: list[str]) -> str | None:
+    """Merge this item's stored labels (JSON array, or None) with freshly fetched page
+    labels: existing entries win on a case-insensitive collision, same cap as a fresh
+    poll. None (not "[]") when the result is empty."""
+    existing = json.loads(existing_json) if existing_json else []
+    merged = _dedupe_labels(existing + new_labels)
+    return json.dumps(merged) if merged else None
 
 
 def _set_error(feed_id: int, message: str, polled: bool = True) -> None:
@@ -324,7 +383,9 @@ def poll_feed(feed_id: int) -> bool:
             original_title = entry.get("title", "")
             # Word count only when we actually read the article, on the full extracted
             # text (before summarize() truncates it); fallback items stay NULL.
-            text, auth, words, fetch_status = _fetch_and_auth(link, jar)
+            text, auth, words, fetch_status, page_labels = _fetch_and_auth(link, jar)
+            labels = _dedupe_labels(_rss_labels(entry) + page_labels)
+            labels_json = json.dumps(labels) if labels else None
             fallback = 0
             title_only = False
             if text is None:
@@ -352,12 +413,12 @@ def poll_feed(feed_id: int) -> bool:
                 conn.execute(
                     "INSERT OR IGNORE INTO items(feed_id, guid, link, original_title, "
                     "published_at, headline, summary, fallback, word_count, auth, "
-                    "fetch_status, text, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "fetch_status, text, created_at, labels) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         feed_id, guid, link or "", original_title, _published_at(entry),
                         headline, summary, fallback, words, auth, fetch_status,
-                        None if title_only else text, now(),
+                        None if title_only else text, now(), labels_json,
                     ),
                 )
 
@@ -385,7 +446,7 @@ def poll_feed(feed_id: int) -> bool:
 
 def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = False) -> None:
     """Re-fetch and re-summarize this feed's fallback items in place; never deletes."""
-    sql = "SELECT id, link, original_title FROM items WHERE feed_id = ? AND fallback = 1"
+    sql = "SELECT id, link, original_title, labels FROM items WHERE feed_id = ? AND fallback = 1"
     params: list[object] = [feed_id]
     if only_blocked:
         # NULL: rows from before the column existed; one attempt gives them a real status.
@@ -433,9 +494,11 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
     prev = _status.get(feed_id)
     try:
         for i, row in enumerate(rows, 1):
-            item_id, link, original_title = row["id"], row["link"], row["original_title"]
+            item_id, link, original_title, existing_labels = (
+                row["id"], row["link"], row["original_title"], row["labels"],
+            )
             _status[feed_id] = f"Retrying {i}/{total}"
-            text, auth, words, fetch_status = _fetch_and_auth(link, jar)
+            text, auth, words, fetch_status, page_labels = _fetch_and_auth(link, jar)
             if text is None:
                 with db() as conn:
                     conn.execute(
@@ -443,6 +506,10 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
                         (auth, fetch_status, item_id),
                     )
                 continue
+
+            # The fetch succeeded (even if summarize doesn't, below): fold the freshly
+            # fetched page labels into whatever this item already had.
+            merged_labels = _merge_labels(existing_labels, page_labels)
 
             try:
                 headline, summary = summarize(
@@ -456,12 +523,12 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
                 log.warning("summarize failed for %s: %s", link, e)
                 with db() as conn:
                     # fetch succeeded even though summarize didn't: record the fresh
-                    # auth/fetch_status so the UI doesn't report a stale status, but
+                    # auth/fetch_status/labels so the UI doesn't report stale data, but
                     # leave fallback = 1, headline, and summary untouched so a later
                     # retry still picks this item up.
                     conn.execute(
-                        "UPDATE items SET auth = ?, fetch_status = ? WHERE id = ?",
-                        (auth, fetch_status, item_id),
+                        "UPDATE items SET auth = ?, fetch_status = ?, labels = ? WHERE id = ?",
+                        (auth, fetch_status, merged_labels, item_id),
                     )
                 continue  # left as a fallback item; a later retry can try again
 
@@ -469,8 +536,8 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
                 # a row pruned meanwhile is a harmless no-op
                 conn.execute(
                     "UPDATE items SET headline = ?, summary = ?, fallback = 0, auth = ?, "
-                    "word_count = ?, fetch_status = ?, text = ? WHERE id = ?",
-                    (headline, summary, auth, words, fetch_status, text, item_id),
+                    "word_count = ?, fetch_status = ?, text = ?, labels = ? WHERE id = ?",
+                    (headline, summary, auth, words, fetch_status, text, merged_labels, item_id),
                 )
     finally:
         if prev is None:

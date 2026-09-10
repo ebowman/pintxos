@@ -15,7 +15,7 @@ import pytest
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from pintxos import poll
+from pintxos import poll, topics
 from pintxos.cookies import cookie_path
 from pintxos.db import db, now
 from pintxos.summarize import MissingApiKey, SummarizeError
@@ -1007,10 +1007,16 @@ def test_last_filtered_records_title_and_reason_for_wired_fixture(feed_id, monke
     last_filtered = json.loads(feed["last_filtered"])
     assert len(last_filtered) == 22
     for entry in last_filtered:
-        assert set(entry) == {"title", "reason"}
+        assert set(entry) == {"kind", "title", "reason", "guid", "link", "published_at"}
+        assert entry["kind"] == "ad"
         assert entry["title"]
+        assert entry["guid"]
+        assert entry["link"]
+        assert entry["published_at"]
         reason = entry["reason"]
-        assert reason == "link" or reason.startswith("tag:") or reason.startswith("title:")
+        assert reason.startswith("ad: ")
+        detail = reason.removeprefix("ad: ")
+        assert detail == "link" or detail.startswith("tag:") or detail.startswith("title:")
 
 
 def _serve(monkeypatch, xml: bytes) -> list[str]:
@@ -1675,3 +1681,535 @@ def test_article_input_falls_back_to_title_when_excerpt_too_short(monkeypatch):
     assert article.fallback is True
     assert article.title_only is True
     assert article.text == "Third article with almost no body text at all"
+
+
+# --- topic classification ------------------------------------------------------
+
+
+def mock_classify(monkeypatch, answer):
+    """Record every topics.classify_topic call; `answer` is a slug (or None), or a
+    callable mapping the article title to one. Returns the list of (title, labels, lead)."""
+    seen: list[tuple[str, list[str], str]] = []
+
+    def fake_classify(title, labels, lead):
+        seen.append((title, labels, lead))
+        return answer(title) if callable(answer) else answer
+
+    monkeypatch.setattr(topics, "classify_topic", fake_classify)
+    return seen
+
+
+def _expected_summarize_calls() -> list[tuple[str, str, str]]:
+    """The (text, title, link) triples poll_feed hands summarize() for the sample feed
+    when the article fetch fails: the feed excerpt, or the title when it is too short."""
+    expected = []
+    for entry in sorted(feedparser.parse(SAMPLE).entries, key=poll._entry_sort_key):
+        text = poll._entry_text(entry)
+        if len(text) < poll.MIN_FALLBACK_CHARS:
+            text = entry.title
+        expected.append((text, entry.title, entry.link))
+    return expected
+
+
+def test_classify_switch_off_never_classifies_and_leaves_summarize_input_unchanged(
+    feed_id, calls, monkeypatch
+):
+    """The switch is off by default: no classify call at all, and summarize() sees
+    exactly the arguments it saw before topic classification existed."""
+    classify_calls = mock_classify(monkeypatch, "sport")
+
+    assert poll.poll_feed(feed_id) is True
+
+    assert classify_calls == []
+    assert calls == _expected_summarize_calls()
+    rows = items()
+    assert [row["topic"] for row in rows] == [None, None, None]
+    assert [row["muted"] for row in rows] == [0, 0, 0]
+    assert feed_row(feed_id)["topic_counts"] is None
+
+
+def test_muted_topic_is_stored_muted_and_never_summarized(feed_id, calls, monkeypatch):
+    set_feed(feed_id, classify_topics=1, mute_topics=json.dumps(["sport"]))
+    classify_calls = mock_classify(
+        monkeypatch, lambda title: "sport" if "rocket" in title else "economy"
+    )
+
+    assert poll.poll_feed(feed_id) is True
+
+    assert len(classify_calls) == 3
+    leads = {title: lead for title, _labels, lead in classify_calls}
+    assert leads["First article about a rocket launch"].startswith("ENCODED BODY:")
+    # A title-only item has no body to quote, so its lead is empty.
+    assert leads["Third article with almost no body text at all"] == ""
+
+    # The muted entry never reached summarize()...
+    assert [title for _text, title, _url in calls] == [
+        "Second article about a merger",
+        "Third article with almost no body text at all",
+    ]
+    # ... but it is stored, so the next poll does not re-classify it.
+    rows = {row["original_title"]: row for row in items()}
+    muted = rows["First article about a rocket launch"]
+    assert muted["muted"] == 1
+    assert muted["topic"] == "sport"
+    assert muted["headline"] is None
+    assert muted["summary"] is None
+    assert muted["fallback"] == 1
+    assert muted["word_count"] is None
+    assert muted["fetch_status"] == "error"
+    assert "ENCODED BODY" in muted["text"]
+    assert rows["Second article about a merger"]["muted"] == 0
+
+    feed = feed_row(feed_id)
+    assert feed["ads_filtered"] == 1  # the one counter covers both kinds
+    assert json.loads(feed["last_filtered"]) == [
+        {
+            "kind": "topic",
+            "title": "First article about a rocket launch",
+            "reason": "topic: sport",
+            "guid": "https://example.com/one",
+            "link": "https://example.com/one",
+            "published_at": "2025-09-01T10:00:00+00:00",
+        }
+    ]
+    assert json.loads(feed["topic_counts"]) == {"sport": 1, "economy": 2}
+
+
+def test_muted_item_logs_at_info(feed_id, calls, monkeypatch, caplog):
+    set_feed(feed_id, classify_topics=1, mute_topics=json.dumps(["sport"]))
+    mock_classify(monkeypatch, "sport")
+
+    with caplog.at_level("INFO"):
+        poll.poll_feed(feed_id)
+
+    assert "topic sport" in caplog.text
+
+
+def test_unmuted_topic_is_summarized_stored_and_counted(feed_id, calls, monkeypatch):
+    set_feed(feed_id, classify_topics=1, mute_topics=json.dumps(["sport"]))
+    mock_classify(monkeypatch, "science")
+
+    assert poll.poll_feed(feed_id) is True
+
+    assert len(calls) == 3
+    rows = items()
+    assert [row["topic"] for row in rows] == ["science"] * 3
+    assert [row["muted"] for row in rows] == [0, 0, 0]
+    feed = feed_row(feed_id)
+    assert json.loads(feed["topic_counts"]) == {"science": 3}
+    assert feed["ads_filtered"] == 0
+    assert json.loads(feed["last_filtered"]) == []
+
+
+def test_topic_counts_accumulate_across_polls(feed_id, calls, monkeypatch):
+    """Counts are read-modify-written, so a second poll adds to the stored map."""
+    set_feed(feed_id, classify_topics=1, topic_counts=json.dumps({"science": 5}))
+    mock_classify(monkeypatch, "science")
+
+    poll.poll_feed(feed_id)
+
+    assert json.loads(feed_row(feed_id)["topic_counts"]) == {"science": 8}
+
+
+def test_failed_classification_fails_open_and_is_never_counted(feed_id, calls, monkeypatch):
+    """classify_topic returning None mutes nothing and counts nothing."""
+    set_feed(feed_id, classify_topics=1, mute_topics=json.dumps(["sport"]))
+    classify_calls = mock_classify(monkeypatch, None)
+
+    assert poll.poll_feed(feed_id) is True
+
+    assert len(classify_calls) == 3
+    assert len(calls) == 3
+    rows = items()
+    assert [row["topic"] for row in rows] == [None, None, None]
+    assert [row["muted"] for row in rows] == [0, 0, 0]
+    assert feed_row(feed_id)["topic_counts"] is None
+
+
+def test_seen_entries_are_never_reclassified(feed_id, calls, monkeypatch):
+    set_feed(feed_id, classify_topics=1)
+    classify_calls = mock_classify(monkeypatch, "science")
+
+    poll.poll_feed(feed_id)
+    assert len(classify_calls) == 3
+    classify_calls.clear()
+    poll.poll_feed(feed_id)
+
+    assert classify_calls == []
+    assert json.loads(feed_row(feed_id)["topic_counts"]) == {"science": 3}
+
+
+def test_missing_api_key_from_classify_stops_the_poll(feed_id, calls, monkeypatch):
+    set_feed(feed_id, classify_topics=1)
+
+    def boom(title, labels, lead):
+        raise MissingApiKey()
+
+    monkeypatch.setattr(topics, "classify_topic", boom)
+
+    assert poll.poll_feed(feed_id) is False
+
+    assert items() == []
+    assert calls == []
+    feed = feed_row(feed_id)
+    assert feed["last_error"] == "ANTHROPIC_API_KEY not set"
+    assert feed["last_polled_at"] is None
+
+
+def test_ad_log_entry_carries_kind_guid_link_and_prefixed_reason(
+    feed_id, calls_with_ad, monkeypatch
+):
+    monkeypatch.setenv("PINTXOS_FILTER_ADS", "1")
+
+    poll.poll_feed(feed_id)
+
+    entries = json.loads(feed_row(feed_id)["last_filtered"])
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["kind"] == "ad"
+    assert entry["title"] == "Groupon Promo Codes: 60% Off in September 2026"
+    assert entry["guid"] == "https://example.com/coupons"
+    assert entry["link"] == "https://example.com/coupons"
+    assert entry["reason"].startswith("ad: ")
+    assert entry["published_at"] == "2025-08-30T10:00:00+00:00"
+
+
+def test_filtered_log_holds_both_kinds_in_poll_order(feed_id, calls_with_ad, monkeypatch):
+    monkeypatch.setenv("PINTXOS_FILTER_ADS", "1")
+    set_feed(feed_id, classify_topics=1, mute_topics=json.dumps(["sport"]))
+    mock_classify(monkeypatch, lambda title: "sport" if "rocket" in title else "economy")
+
+    poll.poll_feed(feed_id)
+
+    feed = feed_row(feed_id)
+    entries = json.loads(feed["last_filtered"])
+    # Ads are filtered before the fetch loop, so the ad comes first in poll order.
+    assert [e["kind"] for e in entries] == ["ad", "topic"]
+    assert [e["link"] for e in entries] == [
+        "https://example.com/coupons",
+        "https://example.com/one",
+    ]
+    assert feed["ads_filtered"] == 2
+    assert len(calls_with_ad) == 1
+
+
+def test_retry_fallback_skips_muted_rows(feed_id, monkeypatch):
+    """A muted item is a fallback row with no summary: retrying it would pay for a
+    summary of something the user asked never to see."""
+    item_id = _seed_fallback_item(feed_id)
+    with db() as conn:
+        conn.execute(
+            "UPDATE items SET muted = 1, topic = 'sport', headline = NULL, summary = NULL "
+            "WHERE id = ?",
+            (item_id,),
+        )
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
+
+    def boom_summarize(*_args, **_kwargs):
+        raise AssertionError("a muted item must never be summarized")
+
+    monkeypatch.setattr(poll, "summarize", boom_summarize)
+
+    poll.retry_fallback(feed_id)
+
+    row = items()[0]
+    assert row["muted"] == 1
+    assert row["fallback"] == 1
+    assert row["summary"] is None
+
+
+# --- summarize_item / summarize_one / filtered_entry ----------------------------
+
+
+def _seed_muted_item(
+    feed_id,
+    guid="muted-guid",
+    link="https://example.com/muted",
+    text="STORED ARTICLE TEXT",
+    topic="sport",
+    original_title="A muted title",
+) -> int:
+    with db() as conn:
+        return conn.execute(
+            "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
+            "headline, summary, fallback, text, topic, muted, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (feed_id, guid, link, original_title, now(), None, None, 1, text, topic, 1, now()),
+        ).lastrowid
+
+
+def _set_filtered_log(feed_id, entries, ads_filtered=None):
+    with db() as conn:
+        conn.execute(
+            "UPDATE feeds SET last_filtered = ?, ads_filtered = ? WHERE id = ?",
+            (
+                json.dumps(entries),
+                len(entries) if ads_filtered is None else ads_filtered,
+                feed_id,
+            ),
+        )
+
+
+def test_summarize_item_releases_muted_row_with_stored_text(feed_id, monkeypatch):
+    _seed_muted_item(feed_id, guid="g1", link="https://example.com/m1", text="STORED TEXT")
+    _set_filtered_log(
+        feed_id,
+        [
+            {
+                "kind": "topic",
+                "title": "A muted title",
+                "reason": "topic: sport",
+                "guid": "g1",
+                "link": "https://example.com/m1",
+                "published_at": "2025-09-01T10:00:00+00:00",
+            }
+        ],
+    )
+    seen = []
+
+    def fake_summarize(text, title, link, respect_language=None):
+        seen.append((text, title, link))
+        return "New headline", "New summary"
+
+    monkeypatch.setattr(poll, "summarize", fake_summarize)
+
+    error = poll.summarize_item(feed_id, "g1")
+
+    assert error is None
+    assert seen == [("STORED TEXT", "A muted title", "https://example.com/m1")]
+    row = items()[0]
+    assert row["muted"] == 0
+    assert row["headline"] == "New headline"
+    assert row["summary"] == "New summary"
+    assert row["topic"] == "sport"  # kept, not re-classified
+    feed = feed_row(feed_id)
+    assert json.loads(feed["last_filtered"]) == []
+    assert feed["ads_filtered"] == 0
+
+
+def test_summarize_item_releases_muted_row_title_only_when_text_is_null(feed_id, monkeypatch):
+    _seed_muted_item(feed_id, guid="g1", text=None, original_title="Title only")
+    _set_filtered_log(feed_id, [{"kind": "topic", "title": "Title only", "guid": "g1",
+                                  "link": "https://example.com/muted",
+                                  "reason": "topic: sport",
+                                  "published_at": "2025-09-01T10:00:00+00:00"}])
+    seen = []
+    monkeypatch.setattr(
+        poll, "summarize",
+        lambda text, title, link, respect_language=None: (seen.append(text), ("H", "S"))[1],
+    )
+
+    error = poll.summarize_item(feed_id, "g1")
+
+    assert error is None
+    assert seen == ["Title only"]
+
+
+def test_summarize_item_ads_filtered_never_goes_below_zero(feed_id, monkeypatch):
+    _seed_muted_item(feed_id, guid="g1")
+    _set_filtered_log(
+        feed_id,
+        [{"kind": "topic", "title": "A muted title", "guid": "g1",
+          "link": "https://example.com/muted", "reason": "topic: sport",
+          "published_at": "2025-09-01T10:00:00+00:00"}],
+        ads_filtered=0,
+    )
+    monkeypatch.setattr(poll, "summarize", lambda *a, **k: ("H", "S"))
+
+    error = poll.summarize_item(feed_id, "g1")
+
+    assert error is None
+    assert feed_row(feed_id)["ads_filtered"] == 0
+
+
+def test_summarize_item_releases_ad_log_entry(feed_id, monkeypatch):
+    _set_filtered_log(
+        feed_id,
+        [
+            {
+                "kind": "ad",
+                "title": "Groupon Promo Codes",
+                "reason": "ad: title",
+                "guid": "ad-guid",
+                "link": "https://example.com/ad",
+                "published_at": "2025-08-30T10:00:00+00:00",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        poll, "fetch_article", lambda link: ("FETCHED ARTICLE TEXT " * 20, "ok", [])
+    )
+    seen = []
+
+    def fake_summarize(text, title, link, respect_language=None):
+        seen.append((text, title, link))
+        return "Ad headline", "Ad summary"
+
+    monkeypatch.setattr(poll, "summarize", fake_summarize)
+
+    error = poll.summarize_item(feed_id, "ad-guid")
+
+    assert error is None
+    assert seen == [
+        ("FETCHED ARTICLE TEXT " * 20, "Groupon Promo Codes", "https://example.com/ad")
+    ]
+    rows = items()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["guid"] == "ad-guid"
+    assert row["link"] == "https://example.com/ad"
+    assert row["original_title"] == "Groupon Promo Codes"
+    assert row["published_at"] == "2025-08-30T10:00:00+00:00"
+    assert row["headline"] == "Ad headline"
+    assert row["summary"] == "Ad summary"
+    assert row["topic"] is None
+    assert row["muted"] == 0
+    feed = feed_row(feed_id)
+    assert json.loads(feed["last_filtered"]) == []
+    assert feed["ads_filtered"] == 0
+
+
+def test_summarize_item_ad_fetch_failure_still_inserts_via_fallback(feed_id, monkeypatch):
+    """An ad entry whose fetch fails still inserts via article_input's fallback path
+    -- here title-only, since the log doesn't carry an RSS excerpt to fall back to."""
+    _set_filtered_log(
+        feed_id,
+        [
+            {
+                "kind": "ad",
+                "title": "Groupon Promo Codes",
+                "reason": "ad: title",
+                "guid": "ad-guid",
+                "link": "https://example.com/ad",
+                "published_at": "2025-08-30T10:00:00+00:00",
+            }
+        ],
+    )
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
+    monkeypatch.setattr(poll, "summarize", lambda *a, **k: ("Ad headline", "Ad summary"))
+
+    error = poll.summarize_item(feed_id, "ad-guid")
+
+    assert error is None
+    row = items()[0]
+    assert row["fallback"] == 1
+    assert row["text"] is None  # title-only: text column stays NULL, like poll_feed
+    assert row["headline"] == "Ad headline"
+
+
+def test_summarize_item_feed_not_found(feed_id):
+    assert poll.summarize_item(feed_id + 1000, "whatever") == "Feed not found"
+
+
+def test_summarize_item_item_not_found(feed_id):
+    assert poll.summarize_item(feed_id, "no-such-guid") == "Item not found"
+
+
+def test_summarize_item_summarize_error_leaves_muted_row_and_log_entry(feed_id, monkeypatch):
+    _seed_muted_item(feed_id, guid="g1")
+    log_entry = {
+        "kind": "topic", "title": "A muted title", "guid": "g1",
+        "link": "https://example.com/muted", "reason": "topic: sport",
+        "published_at": "2025-09-01T10:00:00+00:00",
+    }
+    _set_filtered_log(feed_id, [log_entry])
+
+    def boom(*_a, **_k):
+        raise SummarizeError("boom")
+
+    monkeypatch.setattr(poll, "summarize", boom)
+
+    error = poll.summarize_item(feed_id, "g1")
+
+    assert error == "boom"
+    row = items()[0]
+    assert row["muted"] == 1
+    assert row["headline"] is None
+    feed = feed_row(feed_id)
+    assert json.loads(feed["last_filtered"]) == [log_entry]
+    assert feed["ads_filtered"] == 1
+
+
+def test_summarize_item_summarize_error_leaves_ad_log_entry_and_no_row(feed_id, monkeypatch):
+    log_entry = {
+        "kind": "ad", "title": "Ad title", "guid": "ad-guid",
+        "link": "https://example.com/ad", "reason": "ad: title",
+        "published_at": "2025-08-30T10:00:00+00:00",
+    }
+    _set_filtered_log(feed_id, [log_entry])
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL TEXT " * 20, "ok", []))
+
+    def boom(*_a, **_k):
+        raise SummarizeError("boom")
+
+    monkeypatch.setattr(poll, "summarize", boom)
+
+    error = poll.summarize_item(feed_id, "ad-guid")
+
+    assert error == "boom"
+    assert items() == []
+    feed = feed_row(feed_id)
+    assert json.loads(feed["last_filtered"]) == [log_entry]
+    assert feed["ads_filtered"] == 1
+
+
+def test_summarize_item_missing_api_key(feed_id, monkeypatch):
+    _seed_muted_item(feed_id, guid="g1")
+    _set_filtered_log(feed_id, [{"kind": "topic", "title": "A muted title", "guid": "g1",
+                                  "link": "https://example.com/muted", "reason": "topic: sport",
+                                  "published_at": "2025-09-01T10:00:00+00:00"}])
+
+    def boom(*_a, **_k):
+        raise MissingApiKey()
+
+    monkeypatch.setattr(poll, "summarize", boom)
+
+    error = poll.summarize_item(feed_id, "g1")
+
+    assert error == "ANTHROPIC_API_KEY not set"
+    assert poll._status.get(feed_id) is None  # popped in the finally, like poll_feed
+
+
+def test_filtered_entry_returns_muted_row_as_topic_kind(feed_id):
+    _seed_muted_item(feed_id, guid="g1", link="https://example.com/m1")
+    entry = poll.filtered_entry(feed_id, "g1")
+    assert entry == {
+        "kind": "topic", "title": "A muted title", "guid": "g1", "link": "https://example.com/m1",
+    }
+
+
+def test_filtered_entry_returns_log_entry_when_no_row(feed_id):
+    log_entry = {
+        "kind": "ad", "title": "Ad title", "guid": "ad-guid",
+        "link": "https://example.com/ad", "reason": "ad: title",
+        "published_at": "2025-08-30T10:00:00+00:00",
+    }
+    _set_filtered_log(feed_id, [log_entry])
+    assert poll.filtered_entry(feed_id, "ad-guid") == log_entry
+
+
+def test_filtered_entry_none_when_neither_found(feed_id):
+    assert poll.filtered_entry(feed_id, "nope") is None
+
+
+def test_summarize_one_queues_job(monkeypatch):
+    """Two clicks before the job runs collapse into a single execution, same shape
+    as retry_one/poll_one."""
+    scheduler = BackgroundScheduler(executors={"default": ThreadPoolExecutor(1)})
+    monkeypatch.setattr(poll, "scheduler", scheduler)
+    scheduler.start(paused=True)
+    try:
+        poll.summarize_one(1, "g1")
+        poll.summarize_one(1, "g1")  # same job id replaces the pending one
+        assert [job.id for job in scheduler.get_jobs()] == ["summarize-1-g1"]
+        assert poll._status[1] == "Queued"
+    finally:
+        scheduler.shutdown(wait=False)
+        poll._status.pop(1, None)
+
+
+def test_summarize_one_job_logs_error_at_warning(monkeypatch, caplog):
+    monkeypatch.setattr(poll, "summarize_item", lambda feed_id, guid: "Item not found")
+    with caplog.at_level("WARNING"):
+        poll._run_summarize_job(1, "g1")
+    assert "Item not found" in caplog.text

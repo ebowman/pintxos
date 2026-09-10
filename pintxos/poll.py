@@ -18,7 +18,7 @@ import trafilatura
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from pintxos import adfilter
+from pintxos import adfilter, topics
 from pintxos.config import DEFAULTS, get_setting, is_truthy
 from pintxos.cookies import get_jar, has_cookies_for, save_jar
 from pintxos.db import db, now
@@ -351,6 +351,28 @@ def _merge_labels(existing_json: str | None, new_labels: list[str]) -> str | Non
     return json.dumps(merged) if merged else None
 
 
+def _bump_topic_count(feed_id: int, topic: str) -> None:
+    """Add one to this feed's seen-count for `topic` (JSON map slug -> count).
+
+    Its own short transaction: never held across the classify call that produced
+    the slug. A malformed stored value is replaced by a fresh map.
+    """
+    with db() as conn:
+        row = conn.execute("SELECT topic_counts FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        if row is None:  # feed deleted mid-poll: nothing to count on
+            return
+        try:
+            counts = json.loads(row["topic_counts"] or "{}")
+            if not isinstance(counts, dict):
+                raise ValueError("topic_counts is not an object")
+        except ValueError:
+            counts = {}
+        counts[topic] = int(counts.get(topic, 0) or 0) + 1
+        conn.execute(
+            "UPDATE feeds SET topic_counts = ? WHERE id = ?", (json.dumps(counts), feed_id)
+        )
+
+
 def _set_error(feed_id: int, message: str, polled: bool = True) -> None:
     with db() as conn:
         if polled:
@@ -376,6 +398,8 @@ def poll_feed(feed_id: int) -> bool:
         url, feed_title = feed["url"], feed["title"]
         limit = int(get_setting("PINTXOS_ITEMS_PER_FEED", conn))
         filter_ads = _filter_ads_enabled(conn, feed)
+        classify_topics = bool(feed["classify_topics"])
+        mute_topics = json.loads(feed["mute_topics"] or "[]")
         respect_language = _respect_language(conn, feed)
         extra_ad_patterns = _extra_ad_patterns(conn, feed) if filter_ads else []
         keep_patterns = _keep_patterns(conn) if filter_ads else []
@@ -422,7 +446,16 @@ def poll_feed(feed_id: int) -> bool:
                 if reason is None:
                     kept.append((guid, link, entry))
                 else:
-                    filtered.append({"title": entry.get("title", ""), "reason": reason})
+                    filtered.append(
+                        {
+                            "kind": "ad",
+                            "title": entry.get("title", ""),
+                            "reason": f"ad: {reason}",
+                            "guid": guid,
+                            "link": link,
+                            "published_at": _published_at(entry),
+                        }
+                    )
                     log.debug(
                         "feed %s: skipping ad (%s): %s", feed_id, reason, entry.get("title", "")
                     )
@@ -437,6 +470,50 @@ def poll_feed(feed_id: int) -> bool:
             article = article_input(entry, jar)
             original_title = article.title
             labels_json = json.dumps(article.labels) if article.labels else None
+
+            topic = None
+            if classify_topics:
+                # A short lead is enough to place an article; title-only items have no
+                # body to quote, so they are classified from title and labels alone.
+                lead = "" if article.title_only else " ".join(article.text.split()[:80])
+                try:
+                    topic = topics.classify_topic(article.title, article.labels, lead)
+                except MissingApiKey:
+                    log.error("ANTHROPIC_API_KEY not set, stopping poll")
+                    _set_error(feed_id, "ANTHROPIC_API_KEY not set", polled=False)
+                    return False
+                if topic is not None:
+                    _bump_topic_count(feed_id, topic)
+
+            if topic is not None and topic in mute_topics:
+                # Muted: stored (so the next poll sees it) but never summarized, and
+                # hidden from the output feed. No headline/summary: nothing was paid for.
+                with db() as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO items(feed_id, guid, link, original_title, "
+                        "published_at, headline, summary, fallback, word_count, auth, "
+                        "fetch_status, text, created_at, labels, topic, muted) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            feed_id, guid, link or "", original_title, _published_at(entry),
+                            None, None, int(article.fallback), article.word_count,
+                            article.auth, article.fetch_status,
+                            None if article.title_only else article.text, now(), labels_json,
+                            topic, 1,
+                        ),
+                    )
+                filtered.append(
+                    {
+                        "kind": "topic",
+                        "title": article.title,
+                        "reason": f"topic: {topic}",
+                        "guid": guid,
+                        "link": link,
+                        "published_at": _published_at(entry),
+                    }
+                )
+                log.info("feed %s: muting %s (topic %s): %s", feed_id, link, topic, article.title)
+                continue
 
             log.info("summarizing %s", link)
             _status[feed_id] = f"Summarizing {i}/{total}"
@@ -456,13 +533,14 @@ def poll_feed(feed_id: int) -> bool:
                 conn.execute(
                     "INSERT OR IGNORE INTO items(feed_id, guid, link, original_title, "
                     "published_at, headline, summary, fallback, word_count, auth, "
-                    "fetch_status, text, created_at, labels) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "fetch_status, text, created_at, labels, topic, muted) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         feed_id, guid, link or "", original_title, _published_at(entry),
                         headline, summary, int(article.fallback), article.word_count,
                         article.auth, article.fetch_status,
                         None if article.title_only else article.text, now(), labels_json,
+                        topic, 0,
                     ),
                 )
 
@@ -488,9 +566,182 @@ def poll_feed(feed_id: int) -> bool:
         _status.pop(feed_id, None)
 
 
+def _drop_filtered_entry(feed_id: int, guid: str) -> None:
+    """Remove `guid`'s entry (any kind) from this feed's last_filtered log, if
+    present, and decrement ads_filtered to match (never below 0).
+
+    Its own short transaction, re-read fresh: never held across the fetch or the
+    summarize call above it, and safe even if the log changed underneath us.
+    A no-op (no decrement) when the guid isn't found in the log.
+    """
+    with db() as conn:
+        feed = conn.execute(
+            "SELECT last_filtered, ads_filtered FROM feeds WHERE id = ?", (feed_id,)
+        ).fetchone()
+        if feed is None:  # feed deleted mid-release: nothing to update
+            return
+        try:
+            filtered = json.loads(feed["last_filtered"] or "[]")
+            if not isinstance(filtered, list):
+                raise ValueError("last_filtered is not a list")
+        except ValueError:
+            return
+        remaining = [entry for entry in filtered if entry.get("guid") != guid]
+        if len(remaining) == len(filtered):
+            return  # not present: nothing removed, so nothing to decrement
+        ads_filtered = max(0, int(feed["ads_filtered"] or 0) - 1)
+        conn.execute(
+            "UPDATE feeds SET last_filtered = ?, ads_filtered = ? WHERE id = ?",
+            (json.dumps(remaining), ads_filtered, feed_id),
+        )
+
+
+def filtered_entry(feed_id: int, guid: str) -> dict | None:
+    """The muted item row or last_filtered log entry matching (feed_id, guid), as a
+    dict, or None if neither exists.
+
+    A muted row comes back as {"kind": "topic", "title", "guid", "link"}; a log
+    entry comes back as stored (kind "ad" or "topic", plus title/reason/guid/link/
+    published_at). Synchronous and read-only: the route uses this for an up-front
+    existence check before queueing summarize_one.
+    """
+    with db() as conn:
+        row = conn.execute(
+            "SELECT guid, link, original_title FROM items "
+            "WHERE feed_id = ? AND guid = ? AND muted = 1",
+            (feed_id, guid),
+        ).fetchone()
+        if row is not None:
+            return {
+                "kind": "topic",
+                "title": row["original_title"],
+                "guid": row["guid"],
+                "link": row["link"],
+            }
+        feed = conn.execute("SELECT last_filtered FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+    if feed is None:
+        return None
+    try:
+        filtered = json.loads(feed["last_filtered"] or "[]")
+    except ValueError:
+        return None
+    for entry in filtered:
+        if isinstance(entry, dict) and entry.get("guid") == guid:
+            return entry
+    return None
+
+
+def summarize_item(feed_id: int, guid: str) -> str | None:
+    """Release one item a poll set aside: unmute a stored muted row in place, or
+    fetch+summarize+insert an item for an ad-filtered log entry. Returns an error
+    message, or None on success.
+
+    Never holds a db() write transaction across the fetch or the summarize call.
+    Synchronous; summarize_one runs this on the scheduler thread.
+    """
+    with db() as conn:
+        feed = conn.execute("SELECT * FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        if feed is None:
+            return "Feed not found"
+        respect_language = _respect_language(conn, feed)
+        row = conn.execute(
+            "SELECT * FROM items WHERE feed_id = ? AND guid = ?", (feed_id, guid)
+        ).fetchone()
+        filtered = json.loads(feed["last_filtered"] or "[]")
+
+    _status[feed_id] = "Summarizing 1/1"
+    try:
+        if row is not None and row["muted"]:
+            text = row["text"] if row["text"] is not None else row["original_title"]
+            try:
+                headline, summary = summarize(
+                    text, row["original_title"], row["link"], respect_language=respect_language
+                )
+            except MissingApiKey:
+                return "ANTHROPIC_API_KEY not set"
+            except SummarizeError as e:
+                return str(e)
+            with db() as conn:
+                # a row pruned meanwhile is a harmless no-op
+                conn.execute(
+                    "UPDATE items SET headline = ?, summary = ?, muted = 0 WHERE id = ?",
+                    (headline, summary, row["id"]),
+                )
+        else:
+            entry = next(
+                (e for e in filtered if isinstance(e, dict) and e.get("guid") == guid), None
+            )
+            if entry is None:
+                return "Item not found"
+            # The log doesn't keep the original RSS entry, so there is no body,
+            # categories, or date to recover -- just enough for article_input() (and
+            # the helpers it calls: _entry_text, _rss_labels) to read title/link.
+            # The log's own ISO published_at is used directly at insert below rather
+            # than round-tripped through _published_at(), which expects a parsed
+            # time struct this minimal entry doesn't have.
+            minimal_entry = {
+                "id": entry.get("guid", guid),
+                "link": entry.get("link", ""),
+                "title": entry.get("title", ""),
+            }
+            jar = get_jar()
+            article = article_input(minimal_entry, jar)
+            labels_json = json.dumps(article.labels) if article.labels else None
+            try:
+                headline, summary = summarize(
+                    article.text, article.title, article.link,
+                    respect_language=respect_language,
+                )
+            except MissingApiKey:
+                return "ANTHROPIC_API_KEY not set"
+            except SummarizeError as e:
+                return str(e)
+            with db() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO items(feed_id, guid, link, original_title, "
+                    "published_at, headline, summary, fallback, word_count, auth, "
+                    "fetch_status, text, created_at, labels, topic, muted) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        feed_id, guid, article.link or "", article.title,
+                        entry.get("published_at") or now(), headline, summary,
+                        int(article.fallback), article.word_count, article.auth,
+                        article.fetch_status, None if article.title_only else article.text,
+                        now(), labels_json, None, 0,
+                    ),
+                )
+
+        _drop_filtered_entry(feed_id, guid)
+        return None
+    finally:
+        _status.pop(feed_id, None)
+
+
+def _run_summarize_job(feed_id: int, guid: str) -> None:
+    """Job body for summarize_one: run summarize_item and log its error, if any."""
+    error = summarize_item(feed_id, guid)
+    if error is not None:
+        log.warning("summarize_item feed %s guid %s failed: %s", feed_id, guid, error)
+
+
+def summarize_one(feed_id: int, guid: str) -> None:
+    """Queue a manual release of one filtered/muted item."""
+    _status.setdefault(feed_id, "Queued")
+    scheduler.add_job(
+        _run_summarize_job,
+        args=[feed_id, guid],
+        id=f"summarize-{feed_id}-{guid}",
+        replace_existing=True,
+        misfire_grace_time=None,
+    )
+
+
 def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = False) -> None:
     """Re-fetch and re-summarize this feed's fallback items in place; never deletes."""
-    sql = "SELECT id, link, original_title, labels FROM items WHERE feed_id = ? AND fallback = 1"
+    sql = (
+        "SELECT id, link, original_title, labels FROM items "
+        "WHERE feed_id = ? AND fallback = 1 AND muted = 0"
+    )
     params: list[object] = [feed_id]
     if only_blocked:
         # NULL: rows from before the column existed; one attempt gives them a real status.

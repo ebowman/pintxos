@@ -48,6 +48,17 @@ def _norm_title(s: str) -> str:
     return " ".join(s.strip().translate(_TITLE_NORM_TABLE).split()).casefold()
 
 
+def _is_muted(item: sqlite3.Row) -> bool:
+    """True when this item's topic is muted for its feed, so it stays out of the feed.
+
+    Tolerates rows selected without the column (older callers): absent means not muted.
+    """
+    try:
+        return bool(item["muted"])
+    except (IndexError, KeyError):
+        return False
+
+
 def render_rss(
     feed: sqlite3.Row, items: Sequence[sqlite3.Row], *, full_text: bool = True
 ) -> bytes:
@@ -59,6 +70,8 @@ def render_rss(
     ET.SubElement(channel, "description").text = "Factual summaries by Pintxøs"
 
     for item in items:
+        if _is_muted(item):  # muted topic: stored, but never published
+            continue
         entry = ET.SubElement(channel, "item")
         ET.SubElement(entry, "title").text = item["headline"]
         ET.SubElement(entry, "link").text = item["link"]

@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS feeds (
     filter_ads INTEGER,
     ad_title_patterns TEXT,
     ad_patterns_mode INTEGER,
-    respect_language INTEGER
+    respect_language INTEGER,
+    classify_topics INTEGER,
+    mute_topics TEXT,
+    topic_counts TEXT
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -41,6 +44,8 @@ CREATE TABLE IF NOT EXISTS items (
     text TEXT,
     created_at TEXT,
     labels TEXT,
+    topic TEXT,
+    muted INTEGER NOT NULL DEFAULT 0,
     UNIQUE(feed_id, guid)
 );
 
@@ -75,6 +80,12 @@ def connect() -> sqlite3.Connection:
         ("ad_patterns_mode", "INTEGER"),
         # NULL = follow the global PINTXOS_RESPECT_LANGUAGE setting; 1/0 = explicit per-feed override.
         ("respect_language", "INTEGER"),
+        # NULL = follow the global topic-classification setting; 1/0 = explicit per-feed override.
+        ("classify_topics", "INTEGER"),
+        # JSON array of IPTC topic slugs whose items are muted for this feed.
+        ("mute_topics", "TEXT"),
+        # JSON object {slug: count} of how often each topic was seen on this feed.
+        ("topic_counts", "TEXT"),
     ):
         if name not in cols:
             conn.execute(f"ALTER TABLE feeds ADD COLUMN {name} {ddl}")
@@ -93,6 +104,11 @@ def connect() -> sqlite3.Connection:
         # JSON array of publisher label strings (RSS categories + page section/tags/
         # keywords). NULL = row written before this column existed, or nothing found.
         ("labels", "TEXT"),
+        # IPTC Media Topics top-level slug from classify_topic(). NULL = not classified
+        # (feature off, classification failed, or row written before this column existed).
+        ("topic", "TEXT"),
+        # 1 = the item's topic is muted for its feed, so it is hidden from the output feed.
+        ("muted", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in item_cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")

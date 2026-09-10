@@ -316,8 +316,12 @@ def article_input(entry, jar: MozillaCookieJar | None) -> ArticleInput:
     the single input-construction path pintxos uses before calling `summarize()`;
     external tools (e.g. a training-corpus capture script) that need identical
     parsing should call this too, so their input matches pintxos's runtime input.
+    word_count is computed on the full extracted text before summarize() truncates
+    it, and stays None for fallback items.
     """
     title = entry.get("title", "")
+    # Must stay equivalent to poll_feed's (guid, link) derivation so the fetched URL
+    # and the stored one never diverge.
     link = entry.get("link") or entry.get("id") or ""
     text, auth, words, fetch_status, page_labels = _fetch_and_auth(link, jar)
     labels = _dedupe_labels(_rss_labels(entry) + page_labels)
@@ -465,8 +469,6 @@ def poll_feed(feed_id: int) -> bool:
         jar = get_jar()
         total = len(kept)
         for i, (guid, link, entry) in enumerate(kept, 1):
-            # Word count only when we actually read the article, on the full extracted
-            # text (before summarize() truncates it); fallback items stay NULL.
             article = article_input(entry, jar)
             original_title = article.title
             labels_json = json.dumps(article.labels) if article.labels else None

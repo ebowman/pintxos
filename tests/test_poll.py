@@ -1811,6 +1811,45 @@ def test_topic_counts_accumulate_across_polls(feed_id, calls, monkeypatch):
     assert json.loads(feed_row(feed_id)["topic_counts"]) == {"science": 8}
 
 
+def test_summarize_error_does_not_double_count_topic_on_retry(feed_id, monkeypatch):
+    """A permanently-retried item is reclassified every poll (it is never inserted,
+    so it never becomes "seen"), but it must only be counted once summarize() finally
+    succeeds and the item is actually stored -- not once per classify call."""
+    link = "https://example.com/cricket"
+    feed_xml = _label_feed_xml(link, [])
+
+    def fake_get(url):
+        if url == FEED_URL:
+            return FakeResponse(feed_xml)
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(poll, "_get", fake_get)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
+
+    set_feed(feed_id, classify_topics=1)
+    mock_classify(monkeypatch, "science")
+
+    summarize_calls = {"n": 0}
+
+    def flaky_summarize(text, original_title, url, respect_language=None):
+        summarize_calls["n"] += 1
+        if summarize_calls["n"] == 1:
+            raise SummarizeError("boom")
+        return "HEADLINE", "summary"
+
+    monkeypatch.setattr(poll, "summarize", flaky_summarize)
+
+    assert poll.poll_feed(feed_id) is True  # first poll: summarize fails, nothing stored
+    assert items() == []
+    assert feed_row(feed_id)["topic_counts"] is None
+
+    assert poll.poll_feed(feed_id) is True  # second poll: summarize succeeds
+    rows = items()
+    assert len(rows) == 1
+    assert rows[0]["headline"] == "HEADLINE"
+    assert json.loads(feed_row(feed_id)["topic_counts"]) == {"science": 1}
+
+
 def test_failed_classification_fails_open_and_is_never_counted(feed_id, calls, monkeypatch):
     """classify_topic returning None mutes nothing and counts nothing."""
     set_feed(feed_id, classify_topics=1, mute_topics=json.dumps(["sport"]))

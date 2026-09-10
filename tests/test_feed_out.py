@@ -335,3 +335,38 @@ def test_feed_xml_full_text_keeps_first_line_when_not_a_duplicate():
     assert (
         "=== FULL TEXT BELOW ===</p><p>Different first line</p><p>Original Text</p>" in raw
     )
+
+
+def test_feed_xml_omits_muted_items():
+    """A muted item is stored but never published: its topic is muted for this feed."""
+    feed_id = _seed()
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO items
+            (feed_id, guid, link, original_title, published_at, headline, summary,
+             fallback, word_count, created_at, topic, muted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                feed_id,
+                "guid-3",
+                "https://example.com/3",
+                "Original Three",
+                "2026-09-03T12:00:00+00:00",
+                None,
+                None,
+                0,
+                None,
+                now(),
+                "sport",
+                1,
+            ),
+        )
+
+    with TestClient(app) as c:
+        resp = c.get(f"/feeds/{feed_id}.xml")
+
+    assert resp.status_code == 200
+    assert "guid-3" not in resp.text
+    assert "Original Three" not in resp.text
+    parsed = feedparser.parse(resp.content)
+    assert {e.title for e in parsed.entries} == {"Headline One", "Headline Two"}

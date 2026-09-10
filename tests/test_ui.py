@@ -1793,24 +1793,28 @@ def _insert_item(
     published_at=None,
     fallback=0,
     fetch_status=None,
+    muted=0,
+    headline="Headline",
+    summary="Summary.",
 ):
     with db() as conn:
         conn.execute(
             "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
-            "headline, summary, fallback, auth, fetch_status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "headline, summary, fallback, auth, fetch_status, created_at, muted) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 feed_id,
                 guid,
                 link,
                 "Original",
                 published_at or db_now(),
-                "Headline",
-                "Summary.",
+                headline,
+                summary,
                 fallback,
                 auth,
                 fetch_status,
                 db_now(),
+                muted,
             ),
         )
 
@@ -1977,6 +1981,56 @@ def test_feed_edit_page_status_shows_ok_muted_for_clean_feed(monkeypatch):
     assert "<h2>Status</h2>" in page
     assert 'class="info muted"' in page
     assert ">OK " in page
+
+
+def test_feed_edit_page_status_excludes_muted_items(monkeypatch):
+    """items.muted = 1 rows are topic-muted items stored without a headline/summary
+    and never published; the per-feed counts feeding the Status block and the
+    retry-fallback button must not count them."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth=None, fetch_status="ok")
+        _insert_item(
+            1, "g2", auth=None, fetch_status="ok", muted=1, headline=None, summary=None
+        )
+
+        page = c.get("/feeds/1").text
+
+    assert "All 1 articles read in full." in page
+
+
+def test_feed_edit_page_status_domain_ignores_muted_newest_item(monkeypatch):
+    """_feed_login_context derives the cookie domain from the most recently
+    published item; a newer muted row (never published) must not hijack that
+    domain lookup."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(
+            1,
+            "g1",
+            auth="missing",
+            fetch_status="teaser",
+            link="https://www.example.com/a",
+            published_at="2024-01-01T00:00:00+00:00",
+        )
+        _insert_item(
+            1,
+            "g2",
+            auth=None,
+            fetch_status="ok",
+            muted=1,
+            headline=None,
+            summary=None,
+            link="https://muted.example.org/x",
+            published_at="2024-06-01T00:00:00+00:00",
+        )
+
+        page = c.get("/feeds/1").text
+
+    assert "no login cookies are saved for www.example.com" in page
+    assert "muted.example.org" not in page
 
 
 def test_feed_page_status_matches_feeds_table(monkeypatch):

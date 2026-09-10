@@ -482,8 +482,6 @@ def poll_feed(feed_id: int) -> bool:
                     log.error("ANTHROPIC_API_KEY not set, stopping poll")
                     _set_error(feed_id, "ANTHROPIC_API_KEY not set", polled=False)
                     return False
-                if topic is not None:
-                    _bump_topic_count(feed_id, topic)
 
             if topic is not None and topic in mute_topics:
                 # Muted: stored (so the next poll sees it) but never summarized, and
@@ -512,6 +510,8 @@ def poll_feed(feed_id: int) -> bool:
                         "published_at": _published_at(entry),
                     }
                 )
+                if topic is not None:
+                    _bump_topic_count(feed_id, topic)
                 log.info("feed %s: muting %s (topic %s): %s", feed_id, link, topic, article.title)
                 continue
 
@@ -543,6 +543,9 @@ def poll_feed(feed_id: int) -> bool:
                         topic, 0,
                     ),
                 )
+
+            if topic is not None:
+                _bump_topic_count(feed_id, topic)
 
         if jar is not None:
             # ponytail: three blocked items per poll; ceiling: a site that blocks

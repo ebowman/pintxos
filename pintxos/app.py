@@ -24,6 +24,7 @@ from pintxos.feed_out import render_rss
 from pintxos.fetch_status import summarize
 from pintxos.poll import _status as poll_status
 from pintxos.poll import poll_one, reschedule, retry_one, scheduler, start_scheduler
+from pintxos.topics import TOPICS
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -187,6 +188,37 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
     except ValueError:
         last_filtered = []
 
+    try:
+        topic_counts = json.loads(feed["topic_counts"] or "{}")
+        if not isinstance(topic_counts, dict):
+            raise ValueError("topic_counts is not an object")
+    except ValueError:
+        topic_counts = {}
+
+    try:
+        mute_topics = json.loads(feed["mute_topics"] or "[]")
+        if not isinstance(mute_topics, list):
+            raise ValueError("mute_topics is not a list")
+    except ValueError:
+        mute_topics = []
+
+    def _count(slug: str) -> int:
+        value = topic_counts.get(slug, 0)
+        return value if isinstance(value, int) else 0
+
+    classified_total = sum(_count(slug) for slug, _name, _definition in TOPICS)
+    topics = [
+        {
+            "slug": slug,
+            "name": name,
+            "definition": definition,
+            "percent": (
+                round(100 * _count(slug) / classified_total) if classified_total > 0 else None
+            ),
+        }
+        for slug, name, definition in TOPICS
+    ]
+
     return templates.TemplateResponse(
         request,
         "feed_edit.html",
@@ -199,6 +231,10 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "last_filtered": last_filtered,
             "fallback_count": fallback_count,
             "fetch_status": fetch_status,
+            "topics": topics,
+            "classified_total": classified_total,
+            "classify_topics": feed["classify_topics"] or 0,
+            "mute_topics": mute_topics,
         },
     )
 
@@ -211,6 +247,8 @@ def feed_edit_save(
     ad_patterns_mode: str = Form(""),
     ad_title_patterns: str = Form(""),
     respect_language: str = Form(""),
+    classify_topics: str = Form(""),
+    mute_topics: list[str] = Form([]),
 ) -> Response:
     if filter_ads not in ("", "0", "1"):
         return _redirect(f"/feeds/{feed_id}", err="Invalid filter choice")
@@ -218,6 +256,8 @@ def feed_edit_save(
         return _redirect(f"/feeds/{feed_id}", err="Invalid patterns choice")
     if respect_language not in ("", "0", "1"):
         return _redirect(f"/feeds/{feed_id}", err="Invalid language choice")
+    if classify_topics not in ("", "0", "1"):
+        return _redirect(f"/feeds/{feed_id}", err="Invalid topic choice")
 
     title = title.strip()
     if len(title) > 200:
@@ -231,17 +271,25 @@ def feed_edit_save(
     filter_ads_value = int(filter_ads) if filter_ads else None
     patterns_mode_value = int(ad_patterns_mode) if ad_patterns_mode else None
     respect_language_value = int(respect_language) if respect_language else None
+    classify_topics_value = int(classify_topics) if classify_topics else None
+
+    submitted_topics = set(mute_topics)
+    mute_topics_ordered = [slug for slug, _name, _definition in TOPICS if slug in submitted_topics]
+    mute_topics_value = json.dumps(mute_topics_ordered) if mute_topics_ordered else None
 
     with db() as conn:
         cur = conn.execute(
             "UPDATE feeds SET title = ?, filter_ads = ?, ad_patterns_mode = ?, "
-            "ad_title_patterns = ?, respect_language = ? WHERE id = ?",
+            "ad_title_patterns = ?, respect_language = ?, classify_topics = ?, "
+            "mute_topics = ? WHERE id = ?",
             (
                 title or None,
                 filter_ads_value,
                 patterns_mode_value,
                 ad_title_patterns or None,
                 respect_language_value,
+                classify_topics_value,
+                mute_topics_value,
                 feed_id,
             ),
         )

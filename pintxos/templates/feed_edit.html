@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Edit feed · Pintxøs{% endblock %}
+{% block head %}
+<style>
+  .topic-mute:has(input[name=classify_topics][value="0"]:checked) .topic-checkboxes { opacity: 0.45; pointer-events: none; }
+</style>
+{% endblock %}
 {% block content %}
 <form class="filters" method="post" action="/feeds/{{ feed.id }}">
   <div class="title-edit">
@@ -43,6 +48,27 @@
       <label for="ad_title_patterns">This feed's patterns</label>
       <textarea id="ad_title_patterns" name="ad_title_patterns" rows="4" class="mono">{{ ad_title_patterns }}</textarea>
       <div class="muted">One regex per line, applied in addition to the global patterns</div>
+    </div>
+  </div>
+  <div class="topic-mute">
+    <fieldset class="field">
+      <legend>Topic mute</legend>
+      <div class="radios">
+        <label class="radio"><input type="radio" name="classify_topics" value="0" {% if classify_topics != 1 %}checked{% endif %}> Off</label>
+        <label class="radio"><input type="radio" name="classify_topics" value="1" {% if classify_topics == 1 %}checked{% endif %}> On</label>
+      </div>
+      <div class="muted">Adds one small AI call per new item on this feed; keyword patterns above cost nothing.</div>
+    </fieldset>
+    <div class="field topic-checkboxes">
+      <label>Mute topics</label>
+      {% for topic in topics %}
+      <div class="field-checkbox">
+        <label title="{{ topic.definition }}"><input type="checkbox" name="mute_topics" value="{{ topic.slug }}" {% if topic.slug in mute_topics %}checked{% endif %}> {{ topic.name }}{% if topic.percent is not none %} ({{ topic.percent }}%){% endif %}</label>
+      </div>
+      {% endfor %}
+      {% if classified_total > 0 %}
+      <div class="muted">of {{ classified_total }} classified</div>
+      {% endif %}
     </div>
   </div>
   <div class="field filter-log">

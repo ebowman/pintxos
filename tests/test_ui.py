@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import pintxos.app as app_module
-from pintxos import poll
+from pintxos import poll, topics
 from pintxos.app import app
 from pintxos.config import data_dir, get_setting
 from pintxos.cookies import cookie_path, load_jar
@@ -893,8 +893,9 @@ def test_feed_edit_page_shows_radios_and_global_patterns_box(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/feeds/1").text
 
-    # nine radios: three for respect_language, three for filter_ads, three for ad_patterns_mode
-    assert page.count('type="radio"') == 9
+    # eleven radios: three each for respect_language, filter_ads, ad_patterns_mode,
+    # two for classify_topics
+    assert page.count('type="radio"') == 11
     assert 'name="filter_ads"' in page
     assert 'name="ad_patterns_mode"' in page
     assert 'name="ad_title_patterns"' in page
@@ -941,7 +942,7 @@ def test_feed_edit_post_off_and_patterns_saved(monkeypatch):
 
         # the edit page reflects what was just saved
         page = c.get("/feeds/1").text
-        assert page.count('type="radio"') == 9
+        assert page.count('type="radio"') == 11
         assert 'name="filter_ads" value="0" checked' in page
         assert 'name="filter_ads" value="" checked' not in page
         assert 'name="ad_patterns_mode" value="1" checked' in page
@@ -964,6 +965,76 @@ def test_feed_edit_post_off_and_patterns_saved(monkeypatch):
                 "SELECT ad_title_patterns FROM feeds WHERE id = 1"
             ).fetchone()
         assert row["ad_title_patterns"] == "\n\n  foo  \n\n  bar\n\n"
+
+
+def test_feed_edit_page_shows_topic_checkboxes_off_by_default(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/feeds/1").text
+
+    assert page.count('name="mute_topics"') == len(topics.TOPICS)
+    assert 'name="classify_topics" value="0" checked' in page
+    assert 'name="classify_topics" value="1" checked' not in page
+    assert "%)" not in page
+    assert "classified" not in page
+    for slug, name, definition in topics.TOPICS:
+        assert f'value="{slug}"' in page
+        assert f'title="{definition}"' in page
+        assert name in page
+        assert f'name="mute_topics" value="{slug}" checked' not in page
+
+
+def test_feed_edit_post_topic_mute_saves_known_slugs(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post(
+            "/feeds/1",
+            data={
+                "filter_ads": "",
+                "ad_patterns_mode": "",
+                "classify_topics": "1",
+                "mute_topics": ["sport", "politics", "not-a-real-topic"],
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+        with db() as conn:
+            row = conn.execute(
+                "SELECT classify_topics, mute_topics FROM feeds WHERE id = 1"
+            ).fetchone()
+        assert row["classify_topics"] == 1
+        # stored in topics.TOPICS order, not submission order
+        assert json.loads(row["mute_topics"]) == ["politics", "sport"]
+
+        page = c.get("/feeds/1").text
+        assert 'name="classify_topics" value="1" checked' in page
+        assert 'name="classify_topics" value="0" checked' not in page
+        assert 'name="mute_topics" value="sport" checked' in page
+        assert 'name="mute_topics" value="politics" checked' in page
+        for slug, _name, _definition in topics.TOPICS:
+            if slug not in ("sport", "politics"):
+                assert f'name="mute_topics" value="{slug}" checked' not in page
+
+
+def test_feed_edit_page_shows_topic_percentages(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        with db() as conn:
+            conn.execute(
+                "UPDATE feeds SET topic_counts = ? WHERE id = 1",
+                (json.dumps({"sport": 3, "politics": 1}),),
+            )
+        page = c.get("/feeds/1").text
+
+    assert "of 4 classified" in page
+    sport_label = page.split('value="sport"')[1].split("</label>")[0]
+    assert "(75%)" in sport_label
+    politics_label = page.split('value="politics"')[1].split("</label>")[0]
+    assert "(25%)" in politics_label
 
 
 def test_feed_edit_post_patterns_mode_off_stores_zero(monkeypatch):
@@ -1373,7 +1444,7 @@ def test_feed_edit_radios_keep_their_controls(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/feeds/1").text
 
-    assert page.count('type="radio"') == 9
+    assert page.count('type="radio"') == 11
     assert ".field input, .field textarea { width: 100%; }" not in page
     assert "accent-color: var(--accent)" in page
 

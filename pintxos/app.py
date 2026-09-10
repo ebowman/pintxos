@@ -23,7 +23,15 @@ from pintxos.db import db, init_db, now
 from pintxos.feed_out import render_rss
 from pintxos.fetch_status import summarize
 from pintxos.poll import _status as poll_status
-from pintxos.poll import poll_one, reschedule, retry_one, scheduler, start_scheduler
+from pintxos.poll import (
+    filtered_entry,
+    poll_one,
+    reschedule,
+    retry_one,
+    scheduler,
+    start_scheduler,
+    summarize_one,
+)
 from pintxos.topics import TOPICS
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -213,7 +221,7 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
             "name": name,
             "definition": definition,
             "percent": (
-                round(100 * _count(slug) / classified_total) if classified_total > 0 else None
+                round(100 * _count(slug) / classified_total) if _count(slug) > 0 else None
             ),
         }
         for slug, name, definition in TOPICS
@@ -425,6 +433,18 @@ def retry_fallback_route(feed_id: int) -> Response:
             return _redirect("/", msg="No fallback items")
     retry_one(feed_id)
     return _redirect("/", msg=f"Retrying {n} item{'s' if n != 1 else ''}")
+
+
+@app.post("/feeds/{feed_id}/summarize")
+def summarize_route(feed_id: int, guid: str = Form(...)) -> Response:
+    with db() as conn:
+        feed = conn.execute("SELECT id FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        if feed is None:
+            raise HTTPException(status_code=404, detail="feed not found")
+    if filtered_entry(feed_id, guid) is None:
+        return _redirect(f"/feeds/{feed_id}", err="Item not found")
+    summarize_one(feed_id, guid)
+    return _redirect(f"/feeds/{feed_id}", msg="Summarizing…")
 
 
 def env_pinned(key: str) -> bool:

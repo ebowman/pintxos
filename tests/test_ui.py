@@ -809,7 +809,7 @@ def test_index_ads_skipped_cell_is_empty_without_a_count(monkeypatch):
         page = c.get("/").text
 
     assert "<div>0</div>" in page  # the items cell rendered
-    assert "skipped" not in page
+    assert "filtered" not in page
 
 
 def test_index_shows_ads_skipped_count(monkeypatch):
@@ -823,7 +823,7 @@ def test_index_shows_ads_skipped_count(monkeypatch):
             )
         page = c.get("/").text
 
-    assert "1 ad skipped" in page
+    assert "1 filtered" in page
 
 
 def test_empty_env_var_does_not_pin_filter_setting(monkeypatch):
@@ -848,7 +848,7 @@ def test_index_pluralizes_ads_skipped(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         with db() as conn:
             conn.execute("UPDATE feeds SET ads_filtered = 2 WHERE id = 1")
-        assert "2 ads skipped" in c.get("/").text
+        assert "2 filtered" in c.get("/").text
 
 
 def test_flash_banner_renders_once_and_url_is_cleaned_client_side(monkeypatch):
@@ -1035,6 +1035,9 @@ def test_feed_edit_page_shows_topic_percentages(monkeypatch):
     assert "(75%)" in sport_label
     politics_label = page.split('value="politics"')[1].split("</label>")[0]
     assert "(25%)" in politics_label
+    # A topic with no classified items yet shows no percentage at all.
+    arts_label = page.split('value="arts"')[1].split("</label>")[0]
+    assert "%" not in arts_label
 
 
 def test_feed_edit_post_patterns_mode_off_stores_zero(monkeypatch):
@@ -1474,6 +1477,56 @@ def test_feed_edit_page_shows_filtered_title_and_reason(monkeypatch):
     assert "Groupon Promo Codes: 60% Off" in page
     assert "tag:coupons" in page
     assert "Nothing filtered at last poll" not in page
+
+
+def test_feed_edit_page_filter_log_summarize_button_for_topic_and_ad_entries(monkeypatch):
+    """A row with a guid gets a Summarize form/button, for both an ad entry and a
+    topic entry; a legacy row without a guid gets none."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        with db() as conn:
+            conn.execute(
+                "UPDATE feeds SET last_polled_at = ?, last_filtered = ? WHERE id = 1",
+                (
+                    "2026-09-04T00:00:00+00:00",
+                    json.dumps(
+                        [
+                            {
+                                "kind": "ad",
+                                "title": "Groupon Promo Codes: 60% Off",
+                                "reason": "ad: coupon",
+                                "guid": "guid-ad",
+                                "link": "https://example.com/ad",
+                                "published_at": "2026-09-04T00:00:00+00:00",
+                            },
+                            {
+                                "kind": "topic",
+                                "title": "Local Team Wins Match",
+                                "reason": "topic: sport",
+                                "guid": "guid-topic",
+                                "link": "https://example.com/sport",
+                                "published_at": "2026-09-04T00:00:00+00:00",
+                            },
+                            {
+                                "kind": "ad",
+                                "title": "Legacy Entry No Guid",
+                                "reason": "ad: coupon",
+                            },
+                        ]
+                    ),
+                ),
+            )
+        page = c.get("/feeds/1").text
+
+    assert page.count('action="/feeds/1/summarize"') == 2
+    assert page.count('name="guid" value="guid-ad"') == 1
+    assert page.count('name="guid" value="guid-topic"') == 1
+    assert "Legacy Entry No Guid" in page
+    legacy_row = page.split("Legacy Entry No Guid")[1].split("</li>")[0]
+    assert "guid" not in legacy_row
+    assert 'title="Summarize this item and include it in the output feed"' in page
+    assert page.count("Summarize</button>") == 2
 
 
 def test_feed_edit_page_shows_empty_state_when_last_filtered_null(monkeypatch):
@@ -2146,3 +2199,50 @@ def test_retry_one_queues_retry_fallback(monkeypatch):
     monkeypatch.setattr(poll, "scheduler", FakeScheduler())
     poll.retry_one(42)
     assert ("queued", "retry-42") in calls
+
+
+# --- POST /feeds/{id}/summarize ---------------------------------------------
+
+
+def test_summarize_route_unknown_feed_404(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        resp = c.post("/feeds/999/summarize", data={"guid": "guid-1"}, follow_redirects=False)
+    assert resp.status_code == 404
+
+
+def test_summarize_route_item_not_found_redirects_with_err(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    monkeypatch.setattr(app_module, "filtered_entry", lambda feed_id, guid: None)
+    calls = []
+    monkeypatch.setattr(app_module, "summarize_one", lambda feed_id, guid: calls.append((feed_id, guid)))
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post("/feeds/1/summarize", data={"guid": "guid-1"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert location.startswith("/feeds/1?")
+    assert "err=" in location
+    assert "Item+not+found" in location or "Item%20not%20found" in location
+    assert calls == []
+
+
+def test_summarize_route_queues_summarize_one_and_redirects_with_msg(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    monkeypatch.setattr(
+        app_module,
+        "filtered_entry",
+        lambda feed_id, guid: {"kind": "ad", "title": "t", "guid": guid, "link": "l"},
+    )
+    calls = []
+    monkeypatch.setattr(app_module, "summarize_one", lambda feed_id, guid: calls.append((feed_id, guid)))
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post("/feeds/1/summarize", data={"guid": "guid-1"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert location.startswith("/feeds/1?")
+    assert "msg=" in location
+    assert calls == [(1, "guid-1")]

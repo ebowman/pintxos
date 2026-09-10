@@ -36,6 +36,7 @@ Same story, no guessing games. Sanity restored. Point Pintxøs at a feed once, a
 - **English summaries of foreign-language feeds.** By default headlines and summaries stay in the article's language. Turn that off, globally or per feed, to always get English.
 - **Paywalled sites.** Paste your browser's cookies for sites you subscribe to and Pintxøs reads the full article instead of the teaser. Each feed shows whether the login worked.
 - **Word count and reading time** on every item, so you know what you are clicking into.
+- **Topic mute.** Per feed, turn on "Classify topics" on the feed's Edit page; one small AI call per new item classifies it into one of the 17 IPTC Media Topics top-level topics (arts, sport, weather, ...); tick topics to mute; muted items never reach the output feed and cost no summary call; percentages next to each topic show the share of classified items so far; keyword patterns are free and should be tried first; the "Filtered at last poll" list has a Summarize button per row to release an item.
 
 ## How it works
 
@@ -71,7 +72,7 @@ every block rule including the built-ins. Built-in keep rules already rescue
 obvious news headlines (stock sale, for sale, lawsuits, fraud) from the block
 rules above; `PINTXOS_AD_KEEP_PATTERNS` adds to them. The filter only applies to entries
 seen after it is turned on — it never touches items already stored. The Feeds page shows "N
-ads skipped" under a feed's item count for its last poll. Each feed can also
+filtered" under a feed's item count for its last poll. Each feed can also
 override the global switch and choose whether it inherits, extends, or
 ignores the global patterns from its Edit page. The feed's Edit page also
 lets you override its title; leave the field blank to fall back to the
@@ -85,6 +86,27 @@ black friday
 
 The filter was contributed by Eric Bowman (@ebowman) — see
 [pintxos#2](https://github.com/janw76/pintxos/pull/2).
+
+### Topic mute
+
+The ad filter is free and catches deal posts; topic mute is for muting whole
+subjects (sport, weather, arts, ...) that you never want in your feed, at
+the cost of one small AI call per new item. It's off by default, per feed:
+turn on "Classify topics" on the feed's Edit page and each new item is
+classified into one of the 17 IPTC Media Topics top-level topics, then
+matched against the topics you've ticked to mute.
+
+- Tick any of the 17 topics to mute it; a muted item is dropped before
+  summarizing, so it costs nothing and never reaches the output feed.
+- Each topic shows a running percentage — the share of classified items so
+  far that fell into it — shown once at least one item fell into that topic.
+- Keyword title patterns (above) are free and run first; reach for topic
+  mute only for what they can't catch.
+- The "Filtered at last poll" list shows every item dropped by either
+  mechanism and why. Ad-filtered and muted-topic rows carry a Summarize
+  button to release that one item into the output feed anyway.
+
+IPTC Media Topics vocabulary © IPTC (https://iptc.org/), used under CC BY 4.0.
 
 ## Quickstart
 
@@ -247,7 +269,10 @@ is not set, the Settings page lets you store a key in the database instead.
 
 Pintxøs uses Claude Haiku and makes exactly one API call per new article,
 never more: items are summarized once and stored, and are never
-re-summarized on subsequent polls.
+re-summarized on subsequent polls. Feeds with "Classify topics" turned on
+add one more small call per new item — the topic classification call is
+roughly 15% of the cost of a summary call, and only runs on feeds with the
+switch on.
 
 Even though Haiku is the cheapest model Anthropic offers today and Pintxøs avoids repolling and processing, I still recommend watching cost on [Claude Console](https://platform.claude.com/). Cost will obviously scale with the number feeds you poll and the amount of articles published per feed.
 

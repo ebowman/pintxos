@@ -3,6 +3,8 @@
 {% block head %}
 <style>
   .topic-mute:has(input[name=classify_topics][value="0"]:checked) .topic-checkboxes { opacity: 0.45; pointer-events: none; }
+  .filter-log-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0.25rem 0.75rem; }
+  .filter-log-list li form.filter-log-summarize { margin: 0; flex-shrink: 0; }
 </style>
 {% endblock %}
 {% block content %}
@@ -71,24 +73,32 @@
       {% endif %}
     </div>
   </div>
-  <div class="field filter-log">
-    <label>Filtered at last poll{% if feed.last_polled_at %} <span class="muted" title="{{ feed.last_polled_at }}">({{ feed.last_polled_at | ago }} ago)</span>{% endif %}</label>
-    {% if not feed.last_polled_at %}
-    <div class="muted">Not polled yet</div>
-    {% elif not last_filtered %}
-    <div class="muted">Nothing filtered at last poll</div>
-    {% else %}
-    <ul class="filter-log-list">
-      {% for entry in last_filtered %}
-      <li>{{ entry.title }} <span class="mono muted">{{ entry.reason }}</span></li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-    <div class="muted">Rule changes apply from the next poll.</div>
-  </div>
   <button type="submit" class="btn-primary">Save</button>
   <a href="/" class="cancel">Cancel</a>
 </form>
+<div class="field filter-log">
+  <label>Filtered at last poll{% if feed.last_polled_at %} <span class="muted" title="{{ feed.last_polled_at }}">({{ feed.last_polled_at | ago }} ago)</span>{% endif %}</label>
+  {% if not feed.last_polled_at %}
+  <div class="muted">Not polled yet</div>
+  {% elif not last_filtered %}
+  <div class="muted">Nothing filtered at last poll</div>
+  {% else %}
+  <ul class="filter-log-list">
+    {% for entry in last_filtered %}
+    <li>
+      <span>{{ entry.title }} <span class="mono muted">{{ entry.reason }}</span></span>
+      {% if entry.guid %}
+      <form method="post" action="/feeds/{{ feed.id }}/summarize" class="filter-log-summarize">
+        <input type="hidden" name="guid" value="{{ entry.guid }}">
+        <button type="submit" class="btn-tint-neutral" title="Summarize this item and include it in the output feed">Summarize</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <div class="muted">Rule changes apply from the next poll.</div>
+</div>
 <h2>Status</h2>
 <p>{% with fetch_status=fetch_status %}{% include "_fetch_status.html" %}{% endwith %}</p>
 {% if fallback_count > 0 %}

@@ -373,3 +373,78 @@ def test_connect_migrates_existing_db_missing_labels_column(tmp_path, monkeypatc
         assert row["labels"] is None  # pre-existing rows stay NULL
     finally:
         conn2.close()
+
+
+def test_connect_migrates_existing_db_missing_topic_columns(tmp_path, monkeypatch):
+    """A DB from before the topic columns gains them on connect(), and only once."""
+    monkeypatch.setenv("PINTXOS_DATA_DIR", str(tmp_path))
+    old_conn = sqlite3.connect(db_path())
+    old_conn.executescript(
+        """
+        CREATE TABLE feeds (
+            id INTEGER PRIMARY KEY,
+            url TEXT UNIQUE NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            last_polled_at TEXT,
+            last_error TEXT
+        );
+        CREATE TABLE items (
+            id INTEGER PRIMARY KEY,
+            feed_id INTEGER REFERENCES feeds(id) ON DELETE CASCADE,
+            guid TEXT NOT NULL,
+            link TEXT NOT NULL,
+            original_title TEXT,
+            published_at TEXT,
+            headline TEXT,
+            summary TEXT,
+            fallback INTEGER DEFAULT 0,
+            created_at TEXT,
+            UNIQUE(feed_id, guid)
+        );
+        """
+    )
+    old_conn.commit()
+    old_conn.close()
+
+    conn = connect()
+    try:
+        feed_cols = [r["name"] for r in conn.execute("PRAGMA table_info(feeds)")]
+        for name in ("classify_topics", "mute_topics", "topic_counts"):
+            assert feed_cols.count(name) == 1
+        item_cols = [r["name"] for r in conn.execute("PRAGMA table_info(items)")]
+        for name in ("topic", "muted"):
+            assert item_cols.count(name) == 1
+    finally:
+        conn.close()
+
+    # Second connect() must be a no-op migration, not an error, and columns stay singular.
+    conn2 = connect()
+    try:
+        feed_cols2 = [r["name"] for r in conn2.execute("PRAGMA table_info(feeds)")]
+        for name in ("classify_topics", "mute_topics", "topic_counts"):
+            assert feed_cols2.count(name) == 1
+        item_cols2 = [r["name"] for r in conn2.execute("PRAGMA table_info(items)")]
+        for name in ("topic", "muted"):
+            assert item_cols2.count(name) == 1
+
+        feed_id = add_feed(conn2)
+        feed = conn2.execute("SELECT * FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        assert feed["classify_topics"] is None  # pre-existing feeds inherit the global setting
+        assert feed["mute_topics"] is None
+        assert feed["topic_counts"] is None
+
+        item_id = add_item(conn2, feed_id)
+        row = conn2.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+        assert row["topic"] is None  # pre-existing rows stay unclassified
+        assert row["muted"] == 0  # ... and unmuted
+    finally:
+        conn2.close()
+
+
+def test_fresh_schema_has_topic_columns(db):
+    """A DB created from the current SCHEMA already has the topic columns."""
+    feed_cols = {r["name"] for r in db.execute("PRAGMA table_info(feeds)")}
+    assert {"classify_topics", "mute_topics", "topic_counts"} <= feed_cols
+    item_cols = {r["name"] for r in db.execute("PRAGMA table_info(items)")}
+    assert {"topic", "muted"} <= item_cols

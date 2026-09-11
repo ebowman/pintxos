@@ -147,8 +147,8 @@ def _feed_login_context(
     (domain, cookies_loaded, cookie_expiry).
     """
     latest_link = conn.execute(
-        "SELECT link FROM items WHERE feed_id = ? ORDER BY published_at DESC, id DESC "
-        "LIMIT 1",
+        "SELECT link FROM items WHERE feed_id = ? AND muted = 0 "
+        "ORDER BY published_at DESC, id DESC LIMIT 1",
         (feed_id,),
     ).fetchone()
     article_host = urlparse(latest_link["link"]).hostname if latest_link else None
@@ -169,7 +169,7 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
         global_respect_language_on = is_truthy(get_setting("PINTXOS_RESPECT_LANGUAGE", conn))
         counts = conn.execute(
             f"SELECT COUNT(*) AS total, SUM(fallback = 1) AS fallback_count, "
-            f"{_bucket_sql('')} FROM items WHERE feed_id = ?",
+            f"{_bucket_sql('')} FROM items WHERE feed_id = ? AND muted = 0",
             (feed_id,),
         ).fetchone()
         fallback_count = counts["fallback_count"] or 0
@@ -315,7 +315,7 @@ def _load_feed_rows(request: Request, feed_id: int | None = None) -> list[dict]:
     sql = (
         "SELECT f.*, COUNT(i.id) AS item_count, "
         f"{_bucket_sql('i.')} "
-        "FROM feeds f LEFT JOIN items i ON i.feed_id = f.id"
+        "FROM feeds f LEFT JOIN items i ON i.feed_id = f.id AND i.muted = 0"
     )
     params: tuple = ()
     if feed_id is not None:

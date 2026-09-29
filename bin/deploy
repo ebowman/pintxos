@@ -39,7 +39,28 @@ else
     exit 0
   fi
 
-  gh run watch "$run_id" --exit-status -R janw76/pintxos
+  echo "waiting for build run $run_id"
+  watch_elapsed=0
+  watch_status=""
+  watch_conclusion=""
+  while [ "$watch_elapsed" -lt 1800 ]; do
+    read -r watch_status watch_conclusion <<<"$(gh run view "$run_id" -R janw76/pintxos --json status,conclusion --jq '.status + " " + .conclusion')"
+    if [ "$watch_status" = "completed" ]; then
+      break
+    fi
+    sleep 15
+    watch_elapsed=$((watch_elapsed + 15))
+  done
+
+  if [ "$watch_status" != "completed" ]; then
+    echo "timed out waiting for build run $run_id to complete" >&2
+    exit 1
+  fi
+
+  echo "build run $run_id $watch_conclusion"
+  if [ "$watch_conclusion" != "success" ]; then
+    exit 1
+  fi
 
   git fetch --quiet --tags origin
   version="$(git tag --points-at "$sha" 'v*' | sort -V | tail -n1)"
@@ -62,7 +83,7 @@ EOF
 
 echo "deploying $version (was $previous)"
 
-docker compose --project-directory "$DEPLOY_DIR" -f "$DEPLOY_DIR/docker-compose.yml" -f "$override" pull
+docker compose --project-directory "$DEPLOY_DIR" -f "$DEPLOY_DIR/docker-compose.yml" -f "$override" pull --quiet
 docker compose --project-directory "$DEPLOY_DIR" -f "$DEPLOY_DIR/docker-compose.yml" -f "$override" up -d
 
 elapsed=0

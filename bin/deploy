@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# bin/deploy deploys main's latest release build; bin/deploy <version> deploys/rolls back to that version.
+# First output line is always the previously running build's version (or "none").
+set -euo pipefail
+
+DEPLOY_DIR="${PINTXOS_DEPLOY_DIR:-$HOME/docker/pintxos}"
+URL="${PINTXOS_DEPLOY_URL:-http://127.0.0.1:8087}"
+
+previous="none"
+if docker inspect pintxos >/dev/null 2>&1; then
+  previous="$(docker inspect pintxos --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    | sed -n 's/^PINTXOS_VERSION=//p' | head -n1 || true)"
+  if [ -z "$previous" ]; then
+    previous="none"
+  fi
+fi
+echo "$previous"
+
+version=""
+if [ $# -ge 1 ]; then
+  version="${1#v}"
+else
+  git fetch --quiet --tags origin main
+  sha="$(git rev-parse origin/main)"
+
+  run_id=""
+  elapsed=0
+  while [ "$elapsed" -lt 60 ]; do
+    run_id="$(gh run list -R janw76/pintxos --workflow build --branch main --event push --commit "$sha" --json databaseId --jq '.[0].databaseId' || true)"
+    if [ -n "$run_id" ]; then
+      break
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+
+  if [ -z "$run_id" ]; then
+    echo "no release build for $sha (docs-only change?); nothing to deploy"
+    exit 0
+  fi
+
+  gh run watch "$run_id" --exit-status -R janw76/pintxos
+
+  git fetch --quiet --tags origin
+  version="$(git tag --points-at "$sha" 'v*' | sort -V | tail -n1)"
+  version="${version#v}"
+
+  if [ -z "$version" ]; then
+    echo "no version tag points at $sha after build completed" >&2
+    exit 1
+  fi
+fi
+
+override="$(mktemp)"
+trap 'rm -f "$override"' EXIT
+
+cat > "$override" <<EOF
+services:
+  pintxos:
+    image: ghcr.io/janw76/pintxos:${version}
+EOF
+
+echo "deploying $version (was $previous)"
+
+docker compose --project-directory "$DEPLOY_DIR" -f "$DEPLOY_DIR/docker-compose.yml" -f "$override" pull
+docker compose --project-directory "$DEPLOY_DIR" -f "$DEPLOY_DIR/docker-compose.yml" -f "$override" up -d
+
+elapsed=0
+last_health=""
+version_ok=""
+health_ok=""
+settings_ok=""
+while [ "$elapsed" -lt 60 ]; do
+  version_ok=""
+  running_version="$(docker inspect pintxos --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | sed -n 's/^PINTXOS_VERSION=//p' | head -n1 || true)"
+  if [ "$running_version" = "$version" ]; then
+    version_ok="1"
+  fi
+
+  health_ok=""
+  if last_health="$(curl -fsS "$URL/health" 2>/dev/null)" && printf '%s' "$last_health" | grep -q '"ok":true'; then
+    health_ok="1"
+  fi
+
+  settings_ok=""
+  if settings_body="$(curl -fsS "$URL/settings" 2>/dev/null)" && printf '%s' "$settings_body" | grep -qF "Pintxos $version"; then
+    settings_ok="1"
+  fi
+
+  if [ -n "$version_ok" ] && [ -n "$health_ok" ] && [ -n "$settings_ok" ]; then
+    echo "deployed $version, health ok"
+    exit 0
+  fi
+
+  sleep 2
+  elapsed=$((elapsed + 2))
+done
+
+if [ -z "$version_ok" ]; then
+  echo "timed out: container PINTXOS_VERSION did not become $version" >&2
+fi
+if [ -z "$health_ok" ]; then
+  echo "timed out: $URL/health did not report ok:true" >&2
+fi
+if [ -z "$settings_ok" ]; then
+  echo "timed out: $URL/settings did not report Pintxos $version" >&2
+fi
+echo "last health body: $last_health" >&2
+exit 1

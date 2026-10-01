@@ -309,12 +309,25 @@ lets you store that key in the database instead.
 
 ## Cost
 
-* Pintxøs makes exactly **one** summary call per new article, never more: items are
-stored (up to `PINTXOS_KEEP_PER_FEED` per feed) and never re-summarized while
-they remain stored. A failed summary call — unparsable model output, a
-transport error — is stored as a fallback item instead, using the article's
-own title and first 80 words, so it is never retried on later polls; only the
-feed's "Retry N items" button re-summarizes it.
+* Pintxøs normally makes **one** summary call per new article: items are stored
+(up to `PINTXOS_KEEP_PER_FEED` per feed) and a stored, summarized item is not
+summarized again. The exception is a teaser: an article whose fetch was blocked
+is summarized from the feed excerpt, and if you have set up cookies for the
+feed it is re-read and summarized again when the fetch later gets through (see
+"Paywalled feeds").
+* If a summary call fails — unparsable model output, a transport error — the
+item is kept without a summary and retried automatically on later polls. An
+item held without a summary gets at most three automatic tries; the wait
+grows between tries (it doubles; at the default 30 minute poll interval the
+three tries span at least 90 minutes). The cookie re-read of teaser items is
+outside that limit, and a try stopped by an account error (no credit, bad
+key) is not counted as one of the three. Successful calls count against the
+daily budget and the feed's stats; of the failed tries only those where the
+provider actually answered (such as unusable JSON) count, a transport failure
+does not. Once the three tries are used up, nothing is retried automatically
+(apart from that cookie re-read): the item shows its original title with a
+note, and the "Retry N items" button on the feed's edit page re-summarizes it,
+one call per item.
 * The database grows to about 5 MB per feed at the default retention.
 Pintxøs never runs `VACUUM`, so deleting a feed shrinks the file only after
 running `sqlite3 pintxos.db 'VACUUM'` by hand.

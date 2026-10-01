@@ -199,7 +199,7 @@ Fetches impersonate a real browser (`PINTXOS_IMPERSONATE`, default
 looking at a cookie. A challenged request is retried on the next
 profile in the list, requests to one site are spaced two seconds
 apart, and each scheduled poll re-fetches up to three items that were
-blocked earlier.
+blocked earlier (until the feed's daily budget is reached).
 
 ## Filter details
 
@@ -321,15 +321,17 @@ through (see "Paywalled feeds").
 item is kept without a summary and retried automatically on later polls. An
 item held without a summary gets at most three automatic tries; the wait
 grows between tries (it doubles; at the default 30 minute poll interval the
-three tries span at least 90 minutes). The cookie re-read of blocked items is
-outside that limit, and a try stopped by an account error (no credit, bad
-key) is not counted as one of the three. Successful calls count against the
-daily budget and the feed's stats; of the failed tries only those where the
-provider actually answered (such as unusable JSON) count, a transport failure
-does not. Once the three tries are used up, nothing is retried automatically
-(apart from that cookie re-read): the item shows its original title with a
-note, and the "Retry N items" button on the feed's Edit page re-summarizes it,
-one call per item.
+three tries span at least 90 minutes). A try stopped by an account error (no
+credit, bad key) is not counted as one of the three. Successful calls count
+against the daily budget and the feed's stats; of the failed tries only those
+where the provider actually answered (such as unusable JSON) count, a
+transport failure does not. Once the three tries are used up, the item shows
+its original title with a note and is not retried by the automatic retries.
+The one exception: if its article was blocked and your cookies later let the
+fetch through, it is re-read and summarized once, within the daily budget (the
+cookie re-read stops for the day once the feed's daily budget is reached). The
+"Retry N items" button on the feed's Edit page re-summarizes it, one call per
+item.
 * The database grows to about 5 MB per feed at the default retention.
 Pintxøs never runs `VACUUM`, so deleting a feed shrinks the file only after
 running `sqlite3 pintxos.db 'VACUUM'` by hand.

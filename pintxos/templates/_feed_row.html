@@ -13,7 +13,7 @@
   </td>
   <td class="muted nowrap phone-hide" title="{{ feed.last_polled_at or '' }}">{{ feed.last_polled_at | ago }}</td>
   <td class="status">
-    {% if feed.last_error %}<div class="error">{{ feed.last_error }}</div>{% endif %}
+    {% if feed.last_error %}<div class="{{ 'muted' if feed.retry_skipped else 'error' }}">{{ feed.last_error }}</div>{% endif %}
     {% with fetch_status=feed.fetch_status %}{% include "_fetch_status.html" %}{% endwith %}
   </td>
   <td class="actions">
@@ -22,7 +22,7 @@
     <form method="post" action="/feeds/{{ feed.id }}/poll">
       {%- if feed.id in status -%}
       <button type="submit" class="btn-poll btn-polling" disabled data-feed-id="{{ feed.id }}" aria-label="Poll now" title="{{ status[feed.id] }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span class="label">Polling…</span></button>
-      {%- elif feed.last_error -%}
+      {%- elif feed.last_error and not feed.retry_skipped -%}
       <button type="submit" class="btn-poll btn-danger" aria-label="Poll now" title="{{ feed.last_error }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span class="label">Failed</span></button>
       {%- else -%}
       <button type="submit" class="btn-poll btn-tint-neutral" aria-label="Poll now" title="Poll now"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ico" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span class="label">Poll now</span></button>

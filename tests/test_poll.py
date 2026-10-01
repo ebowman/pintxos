@@ -3911,3 +3911,91 @@ def test_poll_with_nothing_filtered_creates_no_stats_row(feed_id, calls):
         conn.execute("DELETE FROM feed_stats")
     assert poll.poll_feed(feed_id) is True  # second poll: everything seen, nothing filtered
     assert filter_stats_today(feed_id) is None
+
+
+# --- retry_fallback skipped by a pause that began after the click -----------
+
+
+def _pause_until(until_dt):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+            ("PINTXOS_PAUSED_UNTIL", until_dt.isoformat()),
+        )
+
+
+def _last_error(feed_id):
+    with db() as conn:
+        return conn.execute("SELECT last_error FROM feeds WHERE id = ?", (feed_id,)).fetchone()[0]
+
+
+def _no_calls(monkeypatch):
+    def boom(*_a, **_k):
+        raise AssertionError("must not be called while paused")
+
+    monkeypatch.setattr(poll, "summarize", boom)
+    monkeypatch.setattr(poll, "fetch_article", boom)
+
+
+@pytest.mark.parametrize("prev", [None, "Fetching feed…", poll._QUEUED])
+def test_retry_fallback_manual_while_paused_leaves_note(feed_id, monkeypatch, prev):
+    _seed_fallback_item(feed_id)
+    _no_calls(monkeypatch)
+    until = datetime(2099, 1, 2, 3, 4, tzinfo=UTC)
+    _pause_until(until)
+    before = [dict(r) for r in items()]
+    if prev is not None:
+        poll._status[feed_id] = prev
+    poll.retry_fallback(feed_id)
+    assert _last_error(feed_id) == (
+        "Retry skipped: polling is paused until 2099-01-02 03:04 UTC; nothing was retried"
+    )
+    assert [dict(r) for r in items()] == before
+    expected = None if prev in (None, poll._QUEUED) else prev
+    assert poll._status.get(feed_id) == expected
+    poll._status.pop(feed_id, None)
+
+
+def test_retry_fallback_only_blocked_while_paused_sets_no_note(feed_id, monkeypatch):
+    _seed_fallback_item(feed_id)
+    _no_calls(monkeypatch)
+    with db() as conn:
+        conn.execute("UPDATE feeds SET last_error = 'old error' WHERE id = ?", (feed_id,))
+    _pause_until(datetime.now(UTC) + timedelta(minutes=20))
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    assert _last_error(feed_id) == "old error"
+
+
+@pytest.mark.parametrize("until_delta", [timedelta(minutes=-5), None])
+def test_retry_fallback_no_note_when_pause_over_or_unparsable(feed_id, monkeypatch, until_delta):
+    _seed_fallback_item(feed_id)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
+    monkeypatch.setattr(poll, "summarize", lambda *a, model=None, **k: ("H", "S", model))
+    if until_delta is None:
+        with db() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                ("PINTXOS_PAUSED_UNTIL", "garbage"),
+            )
+    else:
+        _pause_until(datetime.now(UTC) + until_delta)
+    poll.retry_fallback(feed_id)
+    assert _last_error(feed_id) is None
+
+
+def test_successful_manual_retry_clears_its_own_note_only(feed_id, monkeypatch):
+    _seed_fallback_item(feed_id)
+    _pause_until(datetime.now(UTC) + timedelta(minutes=20))
+    poll.retry_fallback(feed_id)
+    assert _last_error(feed_id).startswith("Retry skipped:")
+    with db() as conn:
+        conn.execute("DELETE FROM settings WHERE key = 'PINTXOS_PAUSED_UNTIL'")
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
+    monkeypatch.setattr(poll, "summarize", lambda *a, model=None, **k: ("H", "S", model))
+    poll.retry_fallback(feed_id)
+    assert _last_error(feed_id) is None
+    # an unrelated error is left alone
+    with db() as conn:
+        conn.execute("UPDATE feeds SET last_error = 'feed broke' WHERE id = ?", (feed_id,))
+    poll.retry_fallback(feed_id)
+    assert _last_error(feed_id) == "feed broke"

@@ -716,7 +716,11 @@ def test_settings_page_shows_model_presets_and_key_fields():
     assert "deepseek/deepseek-v4-flash-0731" in page
     assert "anthropic/claude-haiku-4.5" not in page
     assert "openai/gpt-5-mini" not in page
-    assert "Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic." in page
+    assert (
+        "Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic, "
+        "names starting with <code>local:</code> go to your own OpenAI-compatible server "
+        "such as Ollama, at the address set as &ldquo;Local LLM URL&rdquo; on the Settings page."
+    ) in page
     assert 'name="api_key"' in page
     assert 'name="openrouter_api_key"' in page
     assert 'data-model="z-ai/glm-5.3-flash"' in page
@@ -3427,3 +3431,55 @@ def test_settings_test_route_exercises_local_endpoint(monkeypatch):
         resp = c.post("/settings/test", follow_redirects=False)
         assert "err=" not in resp.headers["location"]
     assert seen == ["http://127.0.0.1:9/v1/chat/completions"]
+
+
+def test_settings_post_empty_local_model_rejected():
+    before = get_setting("PINTXOS_MODEL")
+    with TestClient(app) as c:
+        for bad in ("local:", " local: ", "local:   "):
+            resp = c.post(
+                "/settings",
+                data={"model": bad, "poll_minutes": "30", "items_per_feed": "50"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert "err=" in resp.headers["location"]
+    assert get_setting("PINTXOS_MODEL") == before
+
+
+def test_feed_edit_empty_local_model_rejected():
+    feed_id = _seed_feed([])
+    with TestClient(app) as c:
+        for bad in ("local:", " local: ", "local:   "):
+            resp = c.post(f"/feeds/{feed_id}", data={"model": bad}, follow_redirects=False)
+            assert resp.status_code == 303
+            assert "err=" in resp.headers["location"]
+    with db() as conn:
+        row = conn.execute("SELECT model FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+    assert row["model"] is None
+
+
+def test_settings_post_local_fallback_model_rejected(monkeypatch):
+    monkeypatch.delenv("PINTXOS_FALLBACK_MODEL", raising=False)
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings",
+            data={
+                "model": "local:glm4:9b",
+                "fallback_model": "local:x",
+                "poll_minutes": "30",
+                "items_per_feed": "50",
+            },
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    assert "err=" in resp.headers["location"]
+    assert get_setting("PINTXOS_FALLBACK_MODEL") != "local:x"
+
+
+def test_model_help_names_local_provider_on_settings_and_feed_edit_pages():
+    feed_id = _seed_feed([])
+    phrase = "go to your own OpenAI-compatible server such as Ollama"
+    with TestClient(app) as c:
+        assert phrase in c.get("/settings").text
+        assert phrase in c.get(f"/feeds/{feed_id}").text

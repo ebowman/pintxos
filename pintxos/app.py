@@ -428,6 +428,16 @@ def feed_edit_save(
 
     model_value = model.strip() or None
 
+    if (
+        model_value is not None
+        and llm.provider(model_value) == "local"
+        and not model_value[len(llm.LOCAL_PREFIX) :].strip()
+    ):
+        return _redirect(
+            f"/feeds/{feed_id}",
+            err='Local model needs a name after "local:", e.g. local:glm4:9b',
+        )
+
     with db() as conn:
         if model_value is not None:
             if llm.provider(model_value) == "local":
@@ -869,6 +879,18 @@ def save_settings(
     model = model.strip()
     if not model:
         return _redirect("/settings", err="Model is required")
+    if llm.provider(model) == "local" and not model[len(llm.LOCAL_PREFIX) :].strip():
+        return _redirect(
+            "/settings",
+            err='Local model needs a name after "local:", e.g. local:glm4:9b',
+        )
+    if not env_pinned("PINTXOS_FALLBACK_MODEL") and fallback_model.strip().startswith(
+        llm.LOCAL_PREFIX
+    ):
+        return _redirect(
+            "/settings",
+            err="The fallback model cannot be a local model: it is only used through OpenRouter",
+        )
 
     with db() as conn:
         if llm.provider(model) == "local":

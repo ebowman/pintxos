@@ -18,7 +18,7 @@ import trafilatura
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from pintxos import adfilter, feedstats, llm, pagemarkers, topics
+from pintxos import adfilter, feed_out, feedstats, llm, pagemarkers, topics
 from pintxos.config import DEFAULTS, get_setting, is_truthy
 from pintxos.cookies import get_jar, has_cookies_for, save_jar
 from pintxos.db import db, now
@@ -1185,6 +1185,14 @@ def summarize_one(feed_id: int, guid: str) -> None:
     )
 
 
+_RETRY_SKIPPED_PREFIX = "Retry skipped:"
+
+
+def is_retry_skipped_note(text: str | None) -> bool:
+    """True when `text` is the note retry_fallback leaves for a skipped manual retry."""
+    return bool(text) and text.startswith(_RETRY_SKIPPED_PREFIX)
+
+
 def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = False) -> None:
     """Re-fetch and re-summarize this feed's fallback items in place; never deletes.
 
@@ -1202,6 +1210,14 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
     until = paused_until()
     if until is not None and until > datetime.now(UTC):
         log.info("paused until %s", until.isoformat())
+        if not only_blocked:
+            # The route said "Retrying N items" before the pause began; say what happened.
+            shown = feed_out.paused_since_display(until.astimezone(UTC).isoformat())
+            _set_error(
+                feed_id,
+                f"{_RETRY_SKIPPED_PREFIX} polling is paused until {shown}; nothing was retried",
+                polled=False,
+            )
         if prev is None:
             _status.pop(feed_id, None)
         else:
@@ -1349,6 +1365,13 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
                 )
             with db() as conn:
                 feedstats.bump(conn, feed_id, summaries=1)
+        if not only_blocked:
+            # The retry ran, so a "Retry skipped" note this function left earlier is stale.
+            with db() as conn:
+                conn.execute(
+                    "UPDATE feeds SET last_error = NULL WHERE id = ? AND last_error LIKE ?",
+                    (feed_id, f"{_RETRY_SKIPPED_PREFIX}%"),
+                )
     finally:
         if prev is None:
             _status.pop(feed_id, None)

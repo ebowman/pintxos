@@ -183,8 +183,9 @@ back to that same site.
    **Save**. Repeat for each site. You can also upload a cookies.txt file
    there, or copy it to `<PINTXOS_DATA_DIR>/cookies.txt` by hand.
 
-Pintxøs uses the new cookies on the next poll. On a feed's page, "Retry
-N items" re-reads articles that were stored as teasers. When the
+Pintxøs uses the new cookies on the next poll. On a feed's Edit page, "Retry
+N items" re-reads articles that could not be read in full (teasers, blocked pages, failed fetches) and summarizes
+items that have no summary. When the
 Feeds page shows "unreadable with login", it means either your cookies
 expired or those articles are outside your subscription; cookies only
 need re-exporting in the first case.
@@ -309,12 +310,26 @@ lets you store that key in the database instead.
 
 ## Cost
 
-* Pintxøs makes exactly **one** summary call per new article, never more: items are
-stored (up to `PINTXOS_KEEP_PER_FEED` per feed) and never re-summarized while
-they remain stored. A failed summary call — unparsable model output, a
-transport error — is stored as a fallback item instead, using the article's
-own title and first 80 words, so it is never retried on later polls; only the
-feed's "Retry N items" button re-summarizes it.
+* Pintxøs normally makes **one** summary call per new article: items are stored
+(up to `PINTXOS_KEEP_PER_FEED` per feed) and a stored, summarized item is not
+summarized again. The exception is a blocked article (the site answered with
+HTTP 401, 403 or 429): it is summarized from the feed's excerpt, or its title
+when there is no usable excerpt, and if you have set up cookies for the
+article's site it is re-read and summarized again when the fetch later gets
+through (see "Paywalled feeds").
+* If a summary call fails — unparsable model output, a transport error — the
+item is kept without a summary and retried automatically on later polls. An
+item held without a summary gets at most three automatic tries; the wait
+grows between tries (it doubles; at the default 30 minute poll interval the
+three tries span at least 90 minutes). The cookie re-read of blocked items is
+outside that limit, and a try stopped by an account error (no credit, bad
+key) is not counted as one of the three. Successful calls count against the
+daily budget and the feed's stats; of the failed tries only those where the
+provider actually answered (such as unusable JSON) count, a transport failure
+does not. Once the three tries are used up, nothing is retried automatically
+(apart from that cookie re-read): the item shows its original title with a
+note, and the "Retry N items" button on the feed's Edit page re-summarizes it,
+one call per item.
 * The database grows to about 5 MB per feed at the default retention.
 Pintxøs never runs `VACUUM`, so deleting a feed shrinks the file only after
 running `sqlite3 pintxos.db 'VACUUM'` by hand.
@@ -356,7 +371,7 @@ The same setup runs on Linux and macOS; expect slow replies on CPU-only machines
 Long articles make prompts of up to ~7.6k tokens, but Ollama's default context depends on the machine (4k/32k/256k based on VRAM, per `ollama serve --help`), so set `OLLAMA_CONTEXT_LENGTH=16384` or more.
 Current Ollama rejects a prompt that doesn't fit with an error, logged and recorded as the item's summarize error; older versions and some other servers may cut it silently instead, so pintxos logs a warning when the server reports far fewer prompt tokens than it sent.
 If the local server is unreachable, an item is tried three times over at least 90 minutes at the default 30 minute poll interval (the wait doubles per attempt).
-After that the item appears in the feed with its original title and a note that no summary could be made, and it is not retried automatically. Once the server is back, the "Retry N items" button on the feed's edit page re-summarizes them.
+After that the item appears in the feed with its original title and a note that no summary could be made, and it is not retried automatically. Once the server is back, the "Retry N items" button on the feed's Edit page re-summarizes them.
 
 ## Development
 

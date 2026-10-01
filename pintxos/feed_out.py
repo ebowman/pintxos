@@ -35,11 +35,11 @@ _FETCH_NOTES = {
 
 _EXHAUSTED_JSON_NOTE = (
     "Not summarized: the AI service returned an unusable answer three times. "
-    "Pintxøs will not retry on its own; use Retry on the feed page."
+    "Pintxøs will not retry on its own; use the \"Retry\" button on the feed's Edit page."
 )
 _EXHAUSTED_GENERIC_NOTE = (
     "Not summarized: the AI service kept failing. "
-    "Pintxøs will not retry on its own; use Retry on the feed page."
+    "Pintxøs will not retry on its own; use the \"Retry\" button on the feed's Edit page."
 )
 
 _TITLE_NORM_TABLE = str.maketrans(

@@ -965,7 +965,13 @@ def poll_feed(feed_id: int) -> bool:
         if jar is not None:
             # ponytail: three blocked items per poll; ceiling: a site that blocks
             # everything costs three fetches per poll, no summary calls.
-            retry_fallback(feed_id, limit=_BLOCKED_RETRIES, only_blocked=True)
+            retry_fallback(
+                feed_id,
+                limit=_BLOCKED_RETRIES,
+                only_blocked=True,
+                daily_budget=daily_budget,
+                summaries_today=summaries_today,
+            )
 
         with db() as conn:
             # Held rows (still waiting for a summary, not yet exhausted) are invisible
@@ -1193,13 +1199,23 @@ def is_retry_skipped_note(text: str | None) -> bool:
     return bool(text) and text.startswith(_RETRY_SKIPPED_PREFIX)
 
 
-def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = False) -> None:
+def retry_fallback(
+    feed_id: int,
+    limit: int | None = None,
+    only_blocked: bool = False,
+    daily_budget: int | None = None,
+    summaries_today: int = 0,
+) -> None:
     """Re-fetch and re-summarize this feed's fallback items in place; never deletes.
 
     The manual (not only_blocked) mode also picks up rows with no summary at all,
     whatever their fallback flag: the ones the poll is still holding and the
     exhausted ones its sweep has given up on. This button is the only way back for
     an exhausted row, so a success resets its attempt counter to zero.
+
+    The automatic only_blocked mode, when daily_budget is given, stops once
+    summaries_today (plus the billed calls made here) reaches it. The manual mode
+    ignores the budget.
     """
     prev = _status.get(feed_id)
     # The sentinel is retry_one's queue marker, not a caller's progress label, so it
@@ -1218,6 +1234,17 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
                 f"{_RETRY_SKIPPED_PREFIX} polling is paused until {shown}; nothing was retried",
                 polled=False,
             )
+        if prev is None:
+            _status.pop(feed_id, None)
+        else:
+            _status[feed_id] = prev
+        return
+
+    if only_blocked and daily_budget is not None and summaries_today >= daily_budget:
+        log.info(
+            "feed %s: daily budget %d reached, skipping blocked-item re-read",
+            feed_id, daily_budget,
+        )
         if prev is None:
             _status.pop(feed_id, None)
         else:
@@ -1278,6 +1305,12 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
     total = len(rows)
     try:
         for i, row in enumerate(rows, 1):
+            if only_blocked and daily_budget is not None and summaries_today >= daily_budget:
+                log.info(
+                    "feed %s: daily budget %d reached, stopping blocked-item re-read",
+                    feed_id, daily_budget,
+                )
+                break
             item_id, link, original_title, existing_labels = (
                 row["id"], row["link"], row["original_title"], row["labels"],
             )
@@ -1346,6 +1379,7 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
                     # must count it; a transport failure must not.
                     with db() as conn:
                         feedstats.bump(conn, feed_id, summaries=1)
+                    summaries_today += 1
                 continue  # left as a fallback item; a later retry can try again
 
             with db() as conn:  # commit per item: a crash keeps what we already paid for
@@ -1365,6 +1399,7 @@ def retry_fallback(feed_id: int, limit: int | None = None, only_blocked: bool = 
                 )
             with db() as conn:
                 feedstats.bump(conn, feed_id, summaries=1)
+            summaries_today += 1
         if not only_blocked:
             # The retry ran, so a "Retry skipped" note this function left earlier is stale.
             with db() as conn:

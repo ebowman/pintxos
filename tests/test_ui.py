@@ -3089,6 +3089,7 @@ def test_retry_fallback_route_no_fallback_items_does_not_queue(monkeypatch):
 
     assert resp.status_code == 303
     location = resp.headers["location"]
+    assert location.startswith(f"/feeds/{feed_id}?")
     assert "Nothing to retry" in location or "Nothing%20to%20retry" in location
 
     assert calls == []
@@ -3299,6 +3300,7 @@ def test_retry_route_while_paused_says_so_and_queues_nothing(monkeypatch):
         missing = c.post("/feeds/9999/retry-fallback", follow_redirects=False)
     assert resp.status_code == 303
     location = resp.headers["location"].replace("%20", " ")
+    assert location.startswith(f"/feeds/{feed_id}?")
     assert "err=" in location
     assert "paused" in location
     assert "nothing was retried" in location
@@ -3315,6 +3317,7 @@ def test_retry_route_with_past_pause_retries_normally(monkeypatch):
     with TestClient(app) as c:
         resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
     assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/?")
     assert "Retrying 2 items" in resp.headers["location"].replace("%20", " ")
     assert calls == [feed_id]
 
@@ -3327,9 +3330,98 @@ def test_retry_route_paused_with_nothing_to_retry_says_nothing_to_retry(monkeypa
     with TestClient(app) as c:
         resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
     location = resp.headers["location"].replace("%20", " ")
+    assert location.startswith(f"/feeds/{feed_id}?")
     assert "Nothing to retry" in location
     assert "paused" not in location
     assert calls == []
+
+
+def test_retry_route_redirect_pages_show_their_message(monkeypatch):
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: None)
+    nothing = _seed_feed(_NO_FALLBACK)
+    paused = _seed_feed(_WITH_FALLBACK, url="https://example.com/other.xml")
+    with TestClient(app) as c:
+        r = c.post(f"/feeds/{nothing}/retry-fallback", follow_redirects=True)
+        assert r.url.path == f"/feeds/{nothing}"
+        assert "Nothing to retry" in r.text
+        _set_pause(datetime.now(UTC) + timedelta(minutes=20))
+        r = c.post(f"/feeds/{paused}/retry-fallback", follow_redirects=True)
+        assert r.url.path == f"/feeds/{paused}"
+        assert "nothing was retried" in r.text
+
+
+def _row_html(page: str, feed_id: int) -> str:
+    start = page.index(f'<tr id="feed-{feed_id}"')
+    return page[start : page.index("</tr>", start)]
+
+
+_SKIP_NOTE = "Retry skipped: polling is paused until 2099-01-02 03:04 UTC; nothing was retried"
+
+
+def _set_last_error(feed_id, text):
+    with db() as conn:
+        conn.execute("UPDATE feeds SET last_error = ? WHERE id = ?", (text, feed_id))
+
+
+def test_skipped_retry_note_renders_neutral_not_failed_on_both_paths(monkeypatch):
+    feed_id = _seed_feed(_SINGLE_FALLBACK)
+    _set_last_error(feed_id, _SKIP_NOTE)
+    with TestClient(app) as c:
+        for html_ in (_row_html(c.get("/").text, feed_id), c.get(f"/feeds/{feed_id}/row").text):
+            assert _SKIP_NOTE in html_
+            assert 'class="error"' not in html_
+            assert "Failed" not in html_
+            assert "btn-danger\" aria-label=\"Poll now" not in html_
+            assert "Poll now</span>" in html_
+        monkeypatch.setattr(app_module, "poll_status", {feed_id: "Summarizing 1/2"})
+        for html_ in (_row_html(c.get("/").text, feed_id), c.get(f"/feeds/{feed_id}/row").text):
+            assert "Polling…" in html_
+            assert _SKIP_NOTE in html_
+            assert 'class="error"' not in html_
+
+
+def test_real_last_error_still_renders_error_and_failed_on_both_paths():
+    feed_id = _seed_feed(_SINGLE_FALLBACK)
+    _set_last_error(feed_id, "boom <b>x</b>")
+    with TestClient(app) as c:
+        for html_ in (_row_html(c.get("/").text, feed_id), c.get(f"/feeds/{feed_id}/row").text):
+            assert '<div class="error">boom &lt;b&gt;x&lt;/b&gt;</div>' in html_
+            assert "Failed" in html_
+
+
+def test_retry_queued_before_pause_leaves_note_when_it_runs(monkeypatch):
+    """The click is accepted while not paused; a pause begins while the job waits
+    behind a running poll; the held job then runs and says it did nothing."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    held = []
+
+    class HoldingScheduler:
+        def add_job(self, func, args, id, replace_existing, misfire_grace_time):
+            held.append((func, args))
+
+    def boom(*_a, **_k):
+        raise AssertionError("must not be called while paused")
+
+    monkeypatch.setattr(poll, "scheduler", HoldingScheduler())
+    monkeypatch.setattr(poll, "fetch_article", boom)
+    monkeypatch.setattr(poll, "summarize", boom)
+    feed_id = _seed_feed(_SINGLE_FALLBACK)
+    before = [dict(r) for r in _item_rows(feed_id)]
+    with TestClient(app) as c:
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+        assert resp.headers["location"].startswith("/?")
+        assert len(held) == 1
+        _set_pause(datetime.now(UTC) + timedelta(minutes=20))
+        func, args = held[0]
+        func(*args)
+        with db() as conn:
+            err = conn.execute("SELECT last_error FROM feeds WHERE id = ?", (feed_id,)).fetchone()[0]
+        assert err.startswith("Retry skipped: polling is paused until ")
+        assert "nothing was retried" in err
+        row = _row_html(c.get("/").text, feed_id)
+        assert "Retry skipped" in row
+        assert "Failed" not in row
+    assert [dict(r) for r in _item_rows(feed_id)] == before
 
 
 def test_retry_count_matches_manual_retry_selection(monkeypatch):

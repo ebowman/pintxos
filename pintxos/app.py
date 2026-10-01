@@ -26,6 +26,7 @@ from pintxos.fetch_status import summarize
 from pintxos.poll import _status as poll_status
 from pintxos.poll import (
     filtered_entry,
+    is_retry_skipped_note,
     paused_until,
     poll_one,
     reschedule,
@@ -537,6 +538,7 @@ def _load_feed_rows(request: Request, feed_id: int | None = None) -> list[dict]:
         for row in rows:
             feed = dict(row)
             feed["output_url"] = f"{base_url}/feeds/{feed['id']}.xml"
+            feed["retry_skipped"] = is_retry_skipped_note(feed["last_error"])
             paywalled = feed.pop("paywalled") or 0
             login_failed = feed.pop("login_failed") or 0
             unreadable = feed.pop("unreadable") or 0
@@ -641,12 +643,13 @@ def retry_fallback_route(feed_id: int) -> Response:
             (feed_id,),
         ).fetchone()[0]
         if n == 0:
-            return _redirect("/", msg="Nothing to retry")
+            return _redirect(f"/feeds/{feed_id}", msg="Nothing to retry")
     until = paused_until()
     if until is not None and until > datetime.now(UTC):
         shown = feed_out.paused_since_display(until.astimezone(UTC).isoformat())
         return _redirect(
-            "/", err=f"Polling is paused until {shown} after an account error; nothing was retried"
+            f"/feeds/{feed_id}",
+            err=f"Polling is paused until {shown} after an account error; nothing was retried"
         )
     retry_one(feed_id)
     return _redirect("/", msg=f"Retrying {n} item{'s' if n != 1 else ''}")

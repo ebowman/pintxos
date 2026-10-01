@@ -145,7 +145,7 @@ to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST`,
 | `PINTXOS_LOCAL_LLM_URL` | `http://127.0.0.1:11434/v1` | Base URL of an OpenAI-compatible server (Ollama, llama.cpp, vLLM, LM Studio) used by models named `local:<model>`. See "Local models". |
 | `PINTXOS_LOCAL_LLM_KEY` | *(none)* | Optional bearer token for that server. Most local servers need none. |
 | `PINTXOS_LOCAL_LLM_TIMEOUT` | `300` | Seconds to wait for a local model's reply; CPU inference is slow. Connecting is capped at 10 s, so an unreachable server fails fast. Invalid values fall back to 300. No UI field. |
-| `PINTXOS_MODEL` | `z-ai/glm-5.3-flash` | Default model. Names with a slash go to OpenRouter, names without go to Anthropic. Feeds can override it. |
+| `PINTXOS_MODEL` | `z-ai/glm-5.3-flash` | Default model. Names with a slash go to OpenRouter, names without go to Anthropic, names starting with `local:` go to your own OpenAI-compatible server (see "Local models"). Feeds can override it. |
 | `PINTXOS_POLL_MINUTES` | `30` | How often feeds are polled, in minutes. |
 | `PINTXOS_ITEMS_PER_FEED` | `50` | Items in each output feed, and the most feed entries considered per poll. |
 | `PINTXOS_KEEP_PER_FEED` | `1000` | Rows stored per feed; the oldest-inserted are pruned first. Keeps history well beyond the output feed so an entry that leaves and re-enters a publisher's feed is never summarized again. Roughly 5 KB per row with full text. No UI field. |
@@ -355,6 +355,8 @@ On native Linux Docker, add `extra_hosts: ["host.docker.internal:host-gateway"]`
 The same setup runs on Linux and macOS; expect slow replies on CPU-only machines.
 Long articles make prompts of up to ~7.6k tokens, but Ollama's default context depends on the machine (4k/32k/256k based on VRAM, per `ollama serve --help`), so set `OLLAMA_CONTEXT_LENGTH=16384` or more.
 Current Ollama rejects a prompt that doesn't fit with an error, logged and recorded as the item's summarize error; older versions and some other servers may cut it silently instead, so pintxos logs a warning when the server reports far fewer prompt tokens than it sent.
+If the local server is unreachable, an item is tried three times over at least 90 minutes at the default 30 minute poll interval (the wait doubles per attempt).
+After that the item appears in the feed with its original title and a note that no summary could be made, and it is not retried automatically.
 
 ## Development
 

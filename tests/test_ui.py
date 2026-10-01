@@ -3276,8 +3276,60 @@ def test_retry_button_counts_exhausted_row_with_fetched_article_end_to_end(monke
 
         row = _item_rows(1)[0]
         assert row["summary"] == "S"
+        assert row["summarize_attempts"] == 0
         assert "Not summarized" not in c.get("/feeds/1.xml").text
         assert "retry-fallback" not in c.get("/feeds/1").text
+
+
+def _set_pause(until_dt):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+            ("PINTXOS_PAUSED_UNTIL", until_dt.isoformat()),
+        )
+
+
+def test_retry_route_while_paused_says_so_and_queues_nothing(monkeypatch):
+    feed_id = _seed_feed(_WITH_FALLBACK)
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    _set_pause(datetime.now(UTC) + timedelta(minutes=20))
+    with TestClient(app) as c:
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+        missing = c.post("/feeds/9999/retry-fallback", follow_redirects=False)
+    assert resp.status_code == 303
+    location = resp.headers["location"].replace("%20", " ")
+    assert "err=" in location
+    assert "paused" in location
+    assert "nothing was retried" in location
+    assert "msg=" not in location
+    assert calls == []
+    assert missing.status_code == 404
+
+
+def test_retry_route_with_past_pause_retries_normally(monkeypatch):
+    feed_id = _seed_feed(_WITH_FALLBACK)
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    _set_pause(datetime.now(UTC) - timedelta(minutes=5))
+    with TestClient(app) as c:
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+    assert resp.status_code == 303
+    assert "Retrying 2 items" in resp.headers["location"].replace("%20", " ")
+    assert calls == [feed_id]
+
+
+def test_retry_route_paused_with_nothing_to_retry_says_nothing_to_retry(monkeypatch):
+    feed_id = _seed_feed(_NO_FALLBACK)
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    _set_pause(datetime.now(UTC) + timedelta(minutes=20))
+    with TestClient(app) as c:
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+    location = resp.headers["location"].replace("%20", " ")
+    assert "Nothing to retry" in location
+    assert "paused" not in location
+    assert calls == []
 
 
 def test_retry_count_matches_manual_retry_selection(monkeypatch):

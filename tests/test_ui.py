@@ -3089,7 +3089,7 @@ def test_retry_fallback_route_no_fallback_items_does_not_queue(monkeypatch):
 
     assert resp.status_code == 303
     location = resp.headers["location"]
-    assert "No fallback items" in location or "No%20fallback%20items" in location
+    assert "Nothing to retry" in location or "Nothing%20to%20retry" in location
 
     assert calls == []
 
@@ -3110,13 +3110,13 @@ def test_feed_edit_page_retry_form_pluralizes_fallback_count(monkeypatch):
     plural_feed_id = _seed_feed(_WITH_FALLBACK, "https://example.com/plural.xml")
     with TestClient(app) as c:
         page = c.get(f"/feeds/{plural_feed_id}").text
-    assert "Retry 2 fallback items" in page
+    assert "Retry 2 items" in page
 
     singular_feed_id = _seed_feed(_SINGLE_FALLBACK, "https://example.com/singular.xml")
     with TestClient(app) as c:
         page = c.get(f"/feeds/{singular_feed_id}").text
-    assert "Retry 1 fallback item" in page
-    assert "Retry 1 fallback items" not in page
+    assert "Retry 1 item" in page
+    assert "Retry 1 items" not in page
 
     no_fallback_feed_id = _seed_feed(_NO_FALLBACK, "https://example.com/none.xml")
     with TestClient(app) as c:
@@ -3220,6 +3220,94 @@ def test_retry_one_queues_retry_fallback(monkeypatch):
     monkeypatch.setattr(poll, "scheduler", FakeScheduler())
     poll.retry_one(42)
     assert ("queued", "retry-42") in calls
+
+
+def _insert_unsummarized(feed_id, guid, *, attempts=3, fallback=0, muted=0):
+    """A row with no summary: fallback=0 means the article itself fetched fine."""
+    _insert_item(
+        feed_id,
+        guid,
+        fallback=fallback,
+        muted=muted,
+        headline=None,
+        summary=None,
+        fetch_status="ok",
+        original_title=f"Title {guid}",
+    )
+    with db() as conn:
+        conn.execute(
+            "UPDATE items SET summarize_attempts = ?, summarize_error = ? "
+            "WHERE feed_id = ? AND guid = ?",
+            (attempts, "AI service down", feed_id, guid),
+        )
+
+
+def test_retry_button_counts_exhausted_row_with_fetched_article_end_to_end(monkeypatch):
+    """pintxos-hnm: an item whose article fetched fine (fallback = 0) but whose three
+    summarize attempts are used up, in a feed with no fallback = 1 rows, must get the
+    retry button, the route must queue the retry, and the retry must revive the row
+    so the feed output loses the 'Not summarized' note."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+
+    class SyncScheduler:
+        def add_job(self, func, args, id, replace_existing, misfire_grace_time):
+            func(*args)
+
+    monkeypatch.setattr(poll, "scheduler", SyncScheduler())
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
+    monkeypatch.setattr(
+        poll, "summarize", lambda text, title, url, **kwargs: ("H", "S", kwargs.get("model"))
+    )
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_unsummarized(1, "g1")
+        assert all(r["fallback"] == 0 for r in _item_rows(1))
+
+        assert "Not summarized" in c.get("/feeds/1.xml").text
+        page = c.get("/feeds/1").text
+        assert "Retry 1 item<" in page
+        assert "Retry 1 items" not in page
+
+        resp = c.post("/feeds/1/retry-fallback", follow_redirects=False)
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "Nothing" not in location
+        assert "Retrying 1 item" in location.replace("%20", " ")
+
+        row = _item_rows(1)[0]
+        assert row["summary"] == "S"
+        assert "Not summarized" not in c.get("/feeds/1.xml").text
+        assert "retry-fallback" not in c.get("/feeds/1").text
+
+
+def test_retry_count_matches_manual_retry_selection(monkeypatch):
+    """Page count and route count use the manual retry's selection: a row that is both
+    fallback and unsummarized counts once, a held row on the automatic schedule
+    (attempts 1) counts, a muted unsummarized row does not."""
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    feed_id = _seed_feed([("plain", 0, None), ("fb", 1, None)])
+    _insert_unsummarized(feed_id, "both", fallback=1)
+    _insert_unsummarized(feed_id, "held", attempts=1)
+    _insert_unsummarized(feed_id, "muted", muted=1)
+    with TestClient(app) as c:
+        page = c.get(f"/feeds/{feed_id}").text
+        assert "Retry 3 items" in page  # fb, both (once), held
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+    assert "Retrying 3 items" in resp.headers["location"].replace("%20", " ")
+    assert calls == [feed_id]
+
+
+def test_retry_button_absent_and_route_nothing_when_only_muted_unsummarized(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    feed_id = _seed_feed(_NO_FALLBACK)
+    _insert_unsummarized(feed_id, "muted", muted=1)
+    with TestClient(app) as c:
+        assert "retry-fallback" not in c.get(f"/feeds/{feed_id}").text
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+    assert "Nothing to retry" in resp.headers["location"].replace("%20", " ")
+    assert calls == []
 
 
 def test_retry_fallback_route_clears_status_and_reenables_poll_now(monkeypatch):

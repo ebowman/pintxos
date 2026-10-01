@@ -3999,3 +3999,225 @@ def test_successful_manual_retry_clears_its_own_note_only(feed_id, monkeypatch):
         conn.execute("UPDATE feeds SET last_error = 'feed broke' WHERE id = ?", (feed_id,))
     poll.retry_fallback(feed_id)
     assert _last_error(feed_id) == "feed broke"
+
+
+# --- pintxos-a77: the automatic blocked re-read honours the daily budget ---
+
+
+def _cookie_all():
+    write_cookies(f".example.com\tTRUE\t/\tFALSE\t{FUTURE_EXPIRY}\tsid\tabc")
+
+
+def _counting(monkeypatch, summarize_exc=None):
+    """Fetch always succeeds; summarize raises summarize_exc (or succeeds). Returns counters."""
+    c = {"fetch": 0, "sum": 0}
+
+    def fetch(link):
+        c["fetch"] += 1
+        return ("FULL ARTICLE TEXT " * 20, "ok", [])
+
+    def summ(text, title, url, **kwargs):
+        c["sum"] += 1
+        if summarize_exc is not None:
+            raise summarize_exc
+        return "H", "S", kwargs.get("model")
+
+    monkeypatch.setattr(poll, "fetch_article", fetch)
+    monkeypatch.setattr(poll, "summarize", summ)
+    return c
+
+
+def _row(item_id):
+    with db() as conn:
+        return conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+
+
+def _set_budget(feed_id, budget, used):
+    with db() as conn:
+        conn.execute("UPDATE feeds SET daily_budget = ? WHERE id = ?", (budget, feed_id))
+        if used:
+            feedstats.bump(conn, feed_id, summaries=used)
+
+
+def _blocked_pass(feed_id, limit=1):
+    """The automatic pass as poll_feed makes it, with the feed's real budget and count.
+
+    A successful re-fetch stores fetch_status 'ok', which already takes a row out of the
+    blocked selection. The re-arming below (every still-fallback row back to 'blocked')
+    simulates a status that returned to blocked, for example after a manual retry was
+    blocked again; it is NOT what a normal poll does. It lets the budget be pinned
+    across several passes, independent of that side effect.
+    """
+    with db() as conn:
+        conn.execute("UPDATE items SET fetch_status = 'blocked' WHERE fallback = 1")
+    with db() as conn:
+        budget = feed_row(feed_id)["daily_budget"]
+        used = feedstats.totals(conn, feed_id)[0]
+    poll.retry_fallback(
+        feed_id, limit=limit, only_blocked=True, daily_budget=budget, summaries_today=used
+    )
+
+
+
+
+
+
+
+
+
+
+def test_blocked_reread_budget_reached_makes_no_calls(feed_id, monkeypatch, _reset_retry_cursor):
+    _cookie_all()
+    (item_id,) = _seed_blocked_items(feed_id, 1)
+    _set_budget(feed_id, 5, 5)
+    c = _counting(monkeypatch)
+    _blocked_pass(feed_id)
+    assert c == {"fetch": 0, "sum": 0}
+    assert _row(item_id)["fetch_status"] == "blocked"
+
+
+def test_blocked_reread_budget_reached_mid_pass(feed_id, monkeypatch, _reset_retry_cursor):
+    _cookie_all()
+    ids = _seed_blocked_items(feed_id, 3)
+    _set_budget(feed_id, 5, 4)
+    c = _counting(monkeypatch)
+    _blocked_pass(feed_id, limit=3)
+    assert c == {"fetch": 1, "sum": 1}
+    done = [i for i in ids if _row(i)["fallback"] == 0]
+    assert len(done) == 1
+    for i in set(ids) - set(done):
+        row = _row(i)
+        assert (row["fetch_status"], row["summarize_attempts"]) == ("blocked", 0)
+
+
+def test_blocked_reread_billing_semantics(feed_id, monkeypatch, _reset_retry_cursor):
+    _cookie_all()
+    ids = _seed_blocked_items(feed_id, 2)
+    _set_budget(feed_id, 2, 0)
+    transport = SummarizeError("HTTP 503")
+    transport.__cause__ = llm.LLMError("HTTP 503")
+    # transport failures never reach the budget
+    c = _counting(monkeypatch, transport)
+    _blocked_pass(feed_id, limit=2)
+    assert c["sum"] == 2
+    with db() as conn:
+        assert feedstats.totals(conn, feed_id)[0] == 0
+    assert [_row(i)["summarize_attempts"] for i in ids] == [1, 1]
+    # billed failures count against both; the second one reaches the budget of 2
+    c = _counting(monkeypatch, SummarizeError("bad json"))
+    _blocked_pass(feed_id, limit=2)
+    assert c["sum"] == 2
+    with db() as conn:
+        assert feedstats.totals(conn, feed_id)[0] == 2
+    assert [_row(i)["summarize_attempts"] for i in ids] == [2, 2]
+    _blocked_pass(feed_id, limit=2)
+    assert c["sum"] == 2
+
+
+def test_poll_feed_passes_budget_to_blocked_reread(feed_id, calls, monkeypatch, _reset_retry_cursor):
+    _cookie_all()
+    (item_id,) = _seed_blocked_items(feed_id, 1)
+    _mark_sample_guids_seen(feed_id)
+    _set_budget(feed_id, 5, 5)
+    c = _counting(monkeypatch)
+    assert poll.poll_feed(feed_id) is True
+    assert c == {"fetch": 0, "sum": 0}
+    assert _row(item_id)["fallback"] == 1
+    # the same poll with room in the budget does re-read it
+    _set_budget(feed_id, 6, 0)
+    assert poll.poll_feed(feed_id) is True
+    assert c == {"fetch": 1, "sum": 1}
+    assert _row(item_id)["fallback"] == 0
+
+
+def test_manual_retry_ignores_budget(feed_id, monkeypatch, _reset_retry_cursor):
+    _cookie_all()
+    (item_id,) = _seed_blocked_items(feed_id, 1)
+    _set_budget(feed_id, 1, 1)
+    c = _counting(monkeypatch)
+    poll.retry_fallback(feed_id)
+    assert c["sum"] == 1
+    assert _row(item_id)["fallback"] == 0
+
+
+def test_real_flow_second_pass_is_free(feed_id, monkeypatch, _reset_retry_cursor):
+    """No re-arming: after one re-read whose summarize fails (billed), the row's stored
+    fetch_status is no longer 'blocked', so later passes skip it. At most one automatic
+    summarize call per blocked row."""
+    _cookie_all()
+    (item_id,) = _seed_blocked_items(feed_id, 1)
+    c = _counting(monkeypatch, SummarizeError("bad json"))
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    row = _row(item_id)
+    assert c == {"fetch": 1, "sum": 1}
+    assert row["summarize_attempts"] == 1 and row["fallback"] == 1
+    assert (row["headline"], row["summary"]) == ("old headline", "old summary")
+    assert row["fetch_status"] != "blocked"
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    poll.retry_fallback(feed_id, limit=1, only_blocked=True)
+    assert c == {"fetch": 1, "sum": 1}
+
+
+def _sweep_exhausted_blocked_row(feed_id):
+    (item_id,) = _seed_blocked_items(feed_id, 1)
+    with db() as conn:
+        conn.execute(
+            "UPDATE items SET summary = NULL, summarize_attempts = 3 WHERE id = ?", (item_id,)
+        )
+    return item_id
+
+
+
+
+def test_manual_retry_still_picks_up_sweep_exhausted_blocked_row(
+    feed_id, monkeypatch, _reset_retry_cursor
+):
+    _cookie_all()
+    item_id = _sweep_exhausted_blocked_row(feed_id)
+    c = _counting(monkeypatch)
+    poll.retry_fallback(feed_id)
+    row = _row(item_id)
+    assert c["sum"] == 1
+    assert (row["summarize_attempts"], row["fallback"]) == (0, 0)
+
+
+def test_exhausted_blocked_row_is_healed_once_cookies_let_the_fetch_through(
+    feed_id, monkeypatch, _reset_retry_cursor
+):
+    """Self-healing the product owner wants to keep: a blocked row the held-retry sweep
+    gave up on (no summary, 3 attempts) is summarized automatically, once, as soon as
+    cookies let the fetch through, as long as the budget is not reached."""
+    _cookie_all()
+    item_id = _sweep_exhausted_blocked_row(feed_id)
+    c = _counting(monkeypatch)
+    poll.retry_fallback(feed_id, limit=3, only_blocked=True)
+    row = _row(item_id)
+    assert c == {"fetch": 1, "sum": 1}
+    assert row["summary"] == "S"
+    assert (row["fallback"], row["summarize_attempts"]) == (0, 0)
+
+
+def test_exhausted_blocked_row_failing_summary_is_not_retried_by_later_passes(
+    feed_id, monkeypatch, _reset_retry_cursor
+):
+    """The bound for this path: one summarize call, then the stored status is no longer
+    blocked, so later passes make no fetch and no summarize call."""
+    _cookie_all()
+    item_id = _sweep_exhausted_blocked_row(feed_id)
+    c = _counting(monkeypatch, SummarizeError("bad json"))
+    for _ in range(3):
+        poll.retry_fallback(feed_id, limit=3, only_blocked=True)
+    assert c == {"fetch": 1, "sum": 1}
+    assert _row(item_id)["fetch_status"] != "blocked"
+
+
+def test_exhausted_blocked_row_not_reread_when_budget_reached(
+    feed_id, monkeypatch, _reset_retry_cursor
+):
+    _cookie_all()
+    item_id = _sweep_exhausted_blocked_row(feed_id)
+    _set_budget(feed_id, 5, 5)
+    c = _counting(monkeypatch)
+    _blocked_pass(feed_id, limit=3)
+    assert c == {"fetch": 0, "sum": 0}
+    assert _row(item_id)["summary"] is None

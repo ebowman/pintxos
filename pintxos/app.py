@@ -273,7 +273,9 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
         global_model = get_setting("PINTXOS_MODEL", conn)
         warn_at = feed_out.warn_levels(conn)[0]
         counts = conn.execute(
-            f"SELECT COUNT(*) AS total, SUM(fallback = 1) AS fallback_count, "
+            f"SELECT COUNT(*) AS total, "
+            f"SUM(CASE WHEN fallback = 1 OR summary IS NULL THEN 1 ELSE 0 END) "
+            f"AS fallback_count, "
             f"{_bucket_sql('')} FROM items WHERE feed_id = ? AND muted = 0",
             (feed_id,),
         ).fetchone()
@@ -633,10 +635,12 @@ def retry_fallback_route(feed_id: int) -> Response:
         if feed is None:
             raise HTTPException(status_code=404, detail="feed not found")
         n = conn.execute(
-            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1", (feed_id,)
+            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND muted = 0 "
+            "AND (fallback = 1 OR summary IS NULL)",
+            (feed_id,),
         ).fetchone()[0]
         if n == 0:
-            return _redirect("/", msg="No fallback items")
+            return _redirect("/", msg="Nothing to retry")
     retry_one(feed_id)
     return _redirect("/", msg=f"Retrying {n} item{'s' if n != 1 else ''}")
 

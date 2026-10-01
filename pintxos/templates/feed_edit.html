@@ -136,8 +136,8 @@
 {% if item_stats['items'] %}<div class="muted">{{ item_stats['items'] }} items over {{ item_stats.days }} days ({{ item_stats.per_day|round(1) }}/day){% if item_stats.avg_words is not none %} · avg {{ item_stats.avg_words }} words per fetched article{% endif %}</div>{% endif %}
 {% if fallback_count > 0 %}
 <form method="post" action="/feeds/{{ feed.id }}/retry-fallback" class="retry-fallback">
-  <button type="submit" class="btn-tint-neutral">Retry {{ fallback_count }} fallback item{{ "s" if fallback_count != 1 else "" }}</button>
-  <div class="muted">Re-fetches and re-summarizes these items in place; each costs one summary call. Useful after adding subscription cookies.</div>
+  <button type="submit" class="btn-tint-neutral">Retry {{ fallback_count }} item{{ "s" if fallback_count != 1 else "" }}</button>
+  <div class="muted">Re-fetches and re-summarizes items that fell back to the feed's own text or have no summary yet, each costing one summary call. Useful after adding subscription cookies or once a failing AI service is back.</div>
 </form>
 {% endif %}
 {% endblock %}

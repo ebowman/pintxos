@@ -26,6 +26,7 @@ from pintxos.fetch_status import summarize
 from pintxos.poll import _status as poll_status
 from pintxos.poll import (
     filtered_entry,
+    paused_until,
     poll_one,
     reschedule,
     retry_one,
@@ -641,6 +642,12 @@ def retry_fallback_route(feed_id: int) -> Response:
         ).fetchone()[0]
         if n == 0:
             return _redirect("/", msg="Nothing to retry")
+    until = paused_until()
+    if until is not None and until > datetime.now(UTC):
+        shown = feed_out.paused_since_display(until.astimezone(UTC).isoformat())
+        return _redirect(
+            "/", err=f"Polling is paused until {shown} after an account error; nothing was retried"
+        )
     retry_one(feed_id)
     return _redirect("/", msg=f"Retrying {n} item{'s' if n != 1 else ''}")
 

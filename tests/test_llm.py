@@ -649,7 +649,7 @@ def test_local_unreachable_names_the_url(monkeypatch):
 
 @pytest.mark.parametrize(
     "value, expected",
-    [("12", 12.0), ("4", 4.0), ("junk", 300.0), ("-5", 300.0), (None, 300.0)],
+    [("12", 12.0), ("4", 4.0), ("junk", 300.0), ("-5", 300.0), (None, 300.0), ("nan", 300.0), ("inf", 300.0), ("-inf", 300.0)],
 )
 def test_local_timeout_setting_with_fallback_to_default(monkeypatch, value, expected):
     if value is None:

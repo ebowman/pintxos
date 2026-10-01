@@ -273,7 +273,9 @@ def feed_edit_page(request: Request, feed_id: int) -> Response:
         global_model = get_setting("PINTXOS_MODEL", conn)
         warn_at = feed_out.warn_levels(conn)[0]
         counts = conn.execute(
-            f"SELECT COUNT(*) AS total, SUM(fallback = 1) AS fallback_count, "
+            f"SELECT COUNT(*) AS total, "
+            f"SUM(CASE WHEN fallback = 1 OR summary IS NULL THEN 1 ELSE 0 END) "
+            f"AS fallback_count, "
             f"{_bucket_sql('')} FROM items WHERE feed_id = ? AND muted = 0",
             (feed_id,),
         ).fetchone()
@@ -427,6 +429,16 @@ def feed_edit_save(
     mute_topics_value = json.dumps(mute_topics_ordered) if mute_topics_ordered else None
 
     model_value = model.strip() or None
+
+    if (
+        model_value is not None
+        and llm.provider(model_value) == "local"
+        and not model_value[len(llm.LOCAL_PREFIX) :].strip()
+    ):
+        return _redirect(
+            f"/feeds/{feed_id}",
+            err='Local model needs a name after "local:", e.g. local:glm4:9b',
+        )
 
     with db() as conn:
         if model_value is not None:
@@ -623,10 +635,12 @@ def retry_fallback_route(feed_id: int) -> Response:
         if feed is None:
             raise HTTPException(status_code=404, detail="feed not found")
         n = conn.execute(
-            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND fallback = 1", (feed_id,)
+            "SELECT COUNT(*) FROM items WHERE feed_id = ? AND muted = 0 "
+            "AND (fallback = 1 OR summary IS NULL)",
+            (feed_id,),
         ).fetchone()[0]
         if n == 0:
-            return _redirect("/", msg="No fallback items")
+            return _redirect("/", msg="Nothing to retry")
     retry_one(feed_id)
     return _redirect("/", msg=f"Retrying {n} item{'s' if n != 1 else ''}")
 
@@ -869,6 +883,18 @@ def save_settings(
     model = model.strip()
     if not model:
         return _redirect("/settings", err="Model is required")
+    if llm.provider(model) == "local" and not model[len(llm.LOCAL_PREFIX) :].strip():
+        return _redirect(
+            "/settings",
+            err='Local model needs a name after "local:", e.g. local:glm4:9b',
+        )
+    if not env_pinned("PINTXOS_FALLBACK_MODEL") and fallback_model.strip().startswith(
+        llm.LOCAL_PREFIX
+    ):
+        return _redirect(
+            "/settings",
+            err="The fallback model cannot be a local model: it is only used through OpenRouter",
+        )
 
     with db() as conn:
         if llm.provider(model) == "local":

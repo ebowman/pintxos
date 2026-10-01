@@ -716,7 +716,11 @@ def test_settings_page_shows_model_presets_and_key_fields():
     assert "deepseek/deepseek-v4-flash-0731" in page
     assert "anthropic/claude-haiku-4.5" not in page
     assert "openai/gpt-5-mini" not in page
-    assert "Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic." in page
+    assert (
+        "Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic, "
+        "names starting with <code>local:</code> go to your own OpenAI-compatible server "
+        "such as Ollama, at the address set as &ldquo;Local LLM URL&rdquo; on the Settings page."
+    ) in page
     assert 'name="api_key"' in page
     assert 'name="openrouter_api_key"' in page
     assert 'data-model="z-ai/glm-5.3-flash"' in page
@@ -3085,7 +3089,7 @@ def test_retry_fallback_route_no_fallback_items_does_not_queue(monkeypatch):
 
     assert resp.status_code == 303
     location = resp.headers["location"]
-    assert "No fallback items" in location or "No%20fallback%20items" in location
+    assert "Nothing to retry" in location or "Nothing%20to%20retry" in location
 
     assert calls == []
 
@@ -3106,13 +3110,13 @@ def test_feed_edit_page_retry_form_pluralizes_fallback_count(monkeypatch):
     plural_feed_id = _seed_feed(_WITH_FALLBACK, "https://example.com/plural.xml")
     with TestClient(app) as c:
         page = c.get(f"/feeds/{plural_feed_id}").text
-    assert "Retry 2 fallback items" in page
+    assert "Retry 2 items" in page
 
     singular_feed_id = _seed_feed(_SINGLE_FALLBACK, "https://example.com/singular.xml")
     with TestClient(app) as c:
         page = c.get(f"/feeds/{singular_feed_id}").text
-    assert "Retry 1 fallback item" in page
-    assert "Retry 1 fallback items" not in page
+    assert "Retry 1 item" in page
+    assert "Retry 1 items" not in page
 
     no_fallback_feed_id = _seed_feed(_NO_FALLBACK, "https://example.com/none.xml")
     with TestClient(app) as c:
@@ -3216,6 +3220,94 @@ def test_retry_one_queues_retry_fallback(monkeypatch):
     monkeypatch.setattr(poll, "scheduler", FakeScheduler())
     poll.retry_one(42)
     assert ("queued", "retry-42") in calls
+
+
+def _insert_unsummarized(feed_id, guid, *, attempts=3, fallback=0, muted=0):
+    """A row with no summary: fallback=0 means the article itself fetched fine."""
+    _insert_item(
+        feed_id,
+        guid,
+        fallback=fallback,
+        muted=muted,
+        headline=None,
+        summary=None,
+        fetch_status="ok",
+        original_title=f"Title {guid}",
+    )
+    with db() as conn:
+        conn.execute(
+            "UPDATE items SET summarize_attempts = ?, summarize_error = ? "
+            "WHERE feed_id = ? AND guid = ?",
+            (attempts, "AI service down", feed_id, guid),
+        )
+
+
+def test_retry_button_counts_exhausted_row_with_fetched_article_end_to_end(monkeypatch):
+    """pintxos-hnm: an item whose article fetched fine (fallback = 0) but whose three
+    summarize attempts are used up, in a feed with no fallback = 1 rows, must get the
+    retry button, the route must queue the retry, and the retry must revive the row
+    so the feed output loses the 'Not summarized' note."""
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+
+    class SyncScheduler:
+        def add_job(self, func, args, id, replace_existing, misfire_grace_time):
+            func(*args)
+
+    monkeypatch.setattr(poll, "scheduler", SyncScheduler())
+    monkeypatch.setattr(poll, "fetch_article", lambda link: ("FULL ARTICLE TEXT " * 20, "ok", []))
+    monkeypatch.setattr(
+        poll, "summarize", lambda text, title, url, **kwargs: ("H", "S", kwargs.get("model"))
+    )
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_unsummarized(1, "g1")
+        assert all(r["fallback"] == 0 for r in _item_rows(1))
+
+        assert "Not summarized" in c.get("/feeds/1.xml").text
+        page = c.get("/feeds/1").text
+        assert "Retry 1 item<" in page
+        assert "Retry 1 items" not in page
+
+        resp = c.post("/feeds/1/retry-fallback", follow_redirects=False)
+        assert resp.status_code == 303
+        location = resp.headers["location"]
+        assert "Nothing" not in location
+        assert "Retrying 1 item" in location.replace("%20", " ")
+
+        row = _item_rows(1)[0]
+        assert row["summary"] == "S"
+        assert "Not summarized" not in c.get("/feeds/1.xml").text
+        assert "retry-fallback" not in c.get("/feeds/1").text
+
+
+def test_retry_count_matches_manual_retry_selection(monkeypatch):
+    """Page count and route count use the manual retry's selection: a row that is both
+    fallback and unsummarized counts once, a held row on the automatic schedule
+    (attempts 1) counts, a muted unsummarized row does not."""
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    feed_id = _seed_feed([("plain", 0, None), ("fb", 1, None)])
+    _insert_unsummarized(feed_id, "both", fallback=1)
+    _insert_unsummarized(feed_id, "held", attempts=1)
+    _insert_unsummarized(feed_id, "muted", muted=1)
+    with TestClient(app) as c:
+        page = c.get(f"/feeds/{feed_id}").text
+        assert "Retry 3 items" in page  # fb, both (once), held
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+    assert "Retrying 3 items" in resp.headers["location"].replace("%20", " ")
+    assert calls == [feed_id]
+
+
+def test_retry_button_absent_and_route_nothing_when_only_muted_unsummarized(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app_module, "retry_one", lambda fid: calls.append(fid))
+    feed_id = _seed_feed(_NO_FALLBACK)
+    _insert_unsummarized(feed_id, "muted", muted=1)
+    with TestClient(app) as c:
+        assert "retry-fallback" not in c.get(f"/feeds/{feed_id}").text
+        resp = c.post(f"/feeds/{feed_id}/retry-fallback", follow_redirects=False)
+    assert "Nothing to retry" in resp.headers["location"].replace("%20", " ")
+    assert calls == []
 
 
 def test_retry_fallback_route_clears_status_and_reenables_poll_now(monkeypatch):
@@ -3427,3 +3519,55 @@ def test_settings_test_route_exercises_local_endpoint(monkeypatch):
         resp = c.post("/settings/test", follow_redirects=False)
         assert "err=" not in resp.headers["location"]
     assert seen == ["http://127.0.0.1:9/v1/chat/completions"]
+
+
+def test_settings_post_empty_local_model_rejected():
+    before = get_setting("PINTXOS_MODEL")
+    with TestClient(app) as c:
+        for bad in ("local:", " local: ", "local:   "):
+            resp = c.post(
+                "/settings",
+                data={"model": bad, "poll_minutes": "30", "items_per_feed": "50"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert "err=" in resp.headers["location"]
+    assert get_setting("PINTXOS_MODEL") == before
+
+
+def test_feed_edit_empty_local_model_rejected():
+    feed_id = _seed_feed([])
+    with TestClient(app) as c:
+        for bad in ("local:", " local: ", "local:   "):
+            resp = c.post(f"/feeds/{feed_id}", data={"model": bad}, follow_redirects=False)
+            assert resp.status_code == 303
+            assert "err=" in resp.headers["location"]
+    with db() as conn:
+        row = conn.execute("SELECT model FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+    assert row["model"] is None
+
+
+def test_settings_post_local_fallback_model_rejected(monkeypatch):
+    monkeypatch.delenv("PINTXOS_FALLBACK_MODEL", raising=False)
+    with TestClient(app) as c:
+        resp = c.post(
+            "/settings",
+            data={
+                "model": "local:glm4:9b",
+                "fallback_model": "local:x",
+                "poll_minutes": "30",
+                "items_per_feed": "50",
+            },
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    assert "err=" in resp.headers["location"]
+    assert get_setting("PINTXOS_FALLBACK_MODEL") != "local:x"
+
+
+def test_model_help_names_local_provider_on_settings_and_feed_edit_pages():
+    feed_id = _seed_feed([])
+    phrase = "go to your own OpenAI-compatible server such as Ollama"
+    with TestClient(app) as c:
+        assert phrase in c.get("/settings").text
+        assert phrase in c.get(f"/feeds/{feed_id}").text

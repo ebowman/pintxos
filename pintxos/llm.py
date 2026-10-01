@@ -9,6 +9,7 @@ OpenAI-compatible server (Ollama, llama.cpp, vLLM, ...), a slash in it
 from __future__ import annotations
 
 import logging
+import math
 from typing import NamedTuple
 
 import anthropic
@@ -247,7 +248,7 @@ def _complete_local(
     base = base or DEFAULT_LOCAL_URL
     try:
         timeout = float(get_setting("PINTXOS_LOCAL_LLM_TIMEOUT") or DEFAULT_LOCAL_TIMEOUT)
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError
     except ValueError:
         timeout = DEFAULT_LOCAL_TIMEOUT

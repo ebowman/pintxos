@@ -1,6 +1,6 @@
 {% set target = model_input_id|default("model") %}
 <div class="muted">
-  <p>Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic.</p>
+  <p>Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic, names starting with <code>local:</code> go to your own OpenAI-compatible server such as Ollama, at the address set as &ldquo;Local LLM URL&rdquo; on the Settings page.</p>
   <table>
     <colgroup><col style="width:44%"><col style="width:7.5rem"><col></colgroup>
     <thead>

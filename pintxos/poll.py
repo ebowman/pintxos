@@ -696,7 +696,9 @@ def poll_feed(feed_id: int) -> bool:
         # Storage is FIFO: `keep` rows survive, pruned by insertion order (id), not
         # by date. Clamped so keep >= limit, hence a poll can never prune a row it
         # just inserted -- which would re-summarize that entry on every poll.
-        keep = max(int(get_setting("PINTXOS_KEEP_PER_FEED", conn)), limit)
+        # A negative setting (documented: -1) skips the prune entirely.
+        keep_setting = int(get_setting("PINTXOS_KEEP_PER_FEED", conn))
+        keep = max(keep_setting, limit)
         filter_ads = _filter_ads_enabled(conn, feed)
         classify_topics = bool(feed["classify_topics"])
         mute_topics = json.loads(feed["mute_topics"] or "[]")
@@ -980,12 +982,13 @@ def poll_feed(feed_id: int) -> bool:
             # Muted rows, which also have no summary, stay prunable -- nothing is
             # pending for them. Exhausted rows (3 attempts) rejoin the window.
             held = "(summary IS NULL AND summarize_attempts < 3 AND muted = 0)"
-            conn.execute(
-                f"DELETE FROM items WHERE feed_id = ? AND NOT {held} AND id NOT IN "
-                f"(SELECT id FROM items WHERE feed_id = ? AND NOT {held} "
-                "ORDER BY id DESC LIMIT ?)",
-                (feed_id, feed_id, keep),
-            )
+            if keep_setting >= 0:  # negative: keep forever
+                conn.execute(
+                    f"DELETE FROM items WHERE feed_id = ? AND NOT {held} AND id NOT IN "
+                    f"(SELECT id FROM items WHERE feed_id = ? AND NOT {held} "
+                    "ORDER BY id DESC LIMIT ?)",
+                    (feed_id, feed_id, keep),
+                )
             conn.execute(
                 "UPDATE feeds SET last_polled_at = ?, last_error = NULL, ads_filtered = ?, "
                 "last_filtered = ? WHERE id = ?",

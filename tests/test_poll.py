@@ -268,6 +268,29 @@ def test_prune_keeps_newest_n(feed_id, calls, monkeypatch):
     assert len(calls) == 2  # only the newest 2 entries were considered
 
 
+@pytest.mark.parametrize("keep", ["-1", "-5"])
+def test_negative_keep_never_prunes(feed_id, calls, monkeypatch, keep):
+    """A negative PINTXOS_KEEP_PER_FEED (documented: -1) keeps every row forever, even
+    past ITEMS_PER_FEED and past what a small positive keep would retain."""
+    with db() as conn:
+        for n in range(5):
+            conn.execute(
+                "INSERT INTO items(feed_id, guid, link, original_title, published_at, "
+                "headline, summary, fallback, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (feed_id, f"old-{n}", "https://example.com/old", "old", "2020-01-0%d" % (n + 1),
+                 "old headline", "old summary", 1, now()),
+            )
+    monkeypatch.setenv("PINTXOS_KEEP_PER_FEED", keep)
+    monkeypatch.setenv("PINTXOS_ITEMS_PER_FEED", "2")
+    poll.poll_all()
+    poll.poll_all()
+    guids = {row["guid"] for row in items()}
+    # a non-negative keep clamps to ITEMS_PER_FEED=2 and prunes to 2 rows; all 5 seeds plus the 2 polled survive.
+    assert guids == {f"old-{n}" for n in range(5)} | {
+        "https://example.com/one", "https://example.com/two",
+    }
+
+
 # (body, env settings, rows pre-seeded with a 2030 date, summaries expected on poll 1,
 # seeded rows expected to survive the prune, always_fails: every summarize() call
 # raises SummarizeError instead of succeeding).

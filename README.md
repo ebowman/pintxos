@@ -148,7 +148,7 @@ to the database. `PINTXOS_BASE_URL`, `PINTXOS_DATA_DIR`, `PINTXOS_HOST`,
 | `PINTXOS_MODEL` | `z-ai/glm-5.3-flash` | Default model. Names with a slash go to OpenRouter, names without go to Anthropic, names starting with `local:` go to your own OpenAI-compatible server (see "Local models"). Feeds can override it. |
 | `PINTXOS_POLL_MINUTES` | `30` | How often feeds are polled, in minutes. |
 | `PINTXOS_ITEMS_PER_FEED` | `50` | Items in each output feed, and the most feed entries considered per poll. |
-| `PINTXOS_KEEP_PER_FEED` | `1000` | Rows stored per feed; the oldest-inserted are pruned first. Keeps history well beyond the output feed so an entry that leaves and re-enters a publisher's feed is never summarized again. Roughly 5 KB per row with full text. No UI field. |
+| `PINTXOS_KEEP_PER_FEED` | `1000` | Rows stored per feed; the oldest-inserted are pruned first. Keeps history well beyond the output feed so an entry that leaves and re-enters a publisher's feed is never summarized again. Roughly 5 KB per row with full text. `-1` keeps every row forever (no pruning); the database then grows without bound. No UI field. |
 | `PINTXOS_DAILY_BUDGET` | `200` | Default "Max summaries per day" for feeds whose own budget is blank. A per-feed value always wins; set it very high to effectively remove the cap. |
 | `PINTXOS_WARN_AT` | `100` | Summaries per feed per day after which the output feed carries a warning item. Per-feed "Warn on volume" turns the warning off for that feed. |
 | `PINTXOS_WARN_HARD_AT` | `180` | From this many summaries the warning uses stronger wording. Must be at least `PINTXOS_WARN_AT`. |

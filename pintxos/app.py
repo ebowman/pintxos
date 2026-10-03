@@ -384,6 +384,7 @@ def feed_edit_save(
     ad_title_patterns: str = Form(""),
     respect_language: str = Form(""),
     classify_topics: str = Form(""),
+    bypass_cache: str = Form(""),
     mute_topics: list[str] = Form([]),
     warn_volume: str = Form(""),
     daily_budget: str = Form(""),
@@ -397,6 +398,8 @@ def feed_edit_save(
         return _redirect(f"/feeds/{feed_id}", err="Invalid language choice")
     if classify_topics not in ("", "0", "1"):
         return _redirect(f"/feeds/{feed_id}", err="Invalid topic choice")
+    if bypass_cache not in ("", "0", "1"):
+        return _redirect(f"/feeds/{feed_id}", err="Invalid cache choice")
     if warn_volume not in ("", "0", "1"):
         return _redirect(f"/feeds/{feed_id}", err="Invalid warning choice")
 
@@ -425,6 +428,7 @@ def feed_edit_save(
     respect_language_value = int(respect_language) if respect_language else None
     classify_topics_value = int(classify_topics) if classify_topics else None
     warn_volume_value = int(warn_volume) if warn_volume else None
+    bypass_cache_value = 1 if bypass_cache == "1" else None
 
     submitted_topics = set(mute_topics)
     mute_topics_ordered = [slug for slug, _name, _definition in TOPICS if slug in submitted_topics]
@@ -461,7 +465,8 @@ def feed_edit_save(
         cur = conn.execute(
             "UPDATE feeds SET title = ?, filter_ads = ?, ad_patterns_mode = ?, "
             "ad_title_patterns = ?, respect_language = ?, classify_topics = ?, "
-            "mute_topics = ?, warn_volume = ?, daily_budget = ?, model = ? WHERE id = ?",
+            "mute_topics = ?, warn_volume = ?, daily_budget = ?, model = ?, "
+            "bypass_cache = ? WHERE id = ?",
             (
                 title or None,
                 filter_ads_value,
@@ -473,6 +478,7 @@ def feed_edit_save(
                 warn_volume_value,
                 daily_budget_value,
                 model_value,
+                bypass_cache_value,
                 feed_id,
             ),
         )

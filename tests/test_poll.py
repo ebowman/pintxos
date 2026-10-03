@@ -4244,3 +4244,100 @@ def test_exhausted_blocked_row_not_reread_when_budget_reached(
     _blocked_pass(feed_id, limit=3)
     assert c == {"fetch": 0, "sum": 0}
     assert _row(item_id)["summary"] is None
+
+
+# -- bypass_cache: cache-busting feed fetch (pintxos-b4d) --
+
+
+def _busted_query(url):
+    from urllib.parse import parse_qsl, urlsplit
+
+    return parse_qsl(urlsplit(url).query, keep_blank_values=True)
+
+
+def test_cache_busted_plain_url(monkeypatch):
+    monkeypatch.setattr(poll.time, "time", lambda: 1234567890.9)
+    assert poll._cache_busted("https://example.com/feed.xml") == (
+        "https://example.com/feed.xml?_pintxos=1234567890"
+    )
+
+
+def test_cache_busted_keeps_existing_query(monkeypatch):
+    monkeypatch.setattr(poll.time, "time", lambda: 42)
+    out = poll._cache_busted("https://example.com/feed.xml?a=1&b=2")
+    assert out == "https://example.com/feed.xml?a=1&b=2&_pintxos=42"
+
+
+def test_cache_busted_keeps_fragment(monkeypatch):
+    monkeypatch.setattr(poll.time, "time", lambda: 42)
+    out = poll._cache_busted("https://example.com/feed.xml?a=1#top")
+    assert out == "https://example.com/feed.xml?a=1&_pintxos=42#top"
+
+
+def test_cache_busted_replaces_existing_param(monkeypatch):
+    monkeypatch.setattr(poll.time, "time", lambda: 42)
+    out = poll._cache_busted("https://example.com/feed.xml?_pintxos=1&a=1")
+    assert _busted_query(out) == [("a", "1"), ("_pintxos", "42")]
+    assert out.count("_pintxos") == 1
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://e.com/f?a=1;b=2", "https://e.com/f?a=1;b=2&_pintxos=42"),
+        ("https://e.com/f?flag", "https://e.com/f?flag&_pintxos=42"),
+        ("https://e.com/f?q=a%20b&x=%7E", "https://e.com/f?q=a%20b&x=%7E&_pintxos=42"),
+        ("https://e.com/f?a=1&a=2", "https://e.com/f?a=1&a=2&_pintxos=42"),
+        ("https://e.com/f?_pintxos=123", "https://e.com/f?_pintxos=42"),
+        ("https://e.com/f?_pintxos", "https://e.com/f?_pintxos=42"),
+        ("https://e.com/f?_pintxosx=1&_pintxos=2", "https://e.com/f?_pintxosx=1&_pintxos=42"),
+    ],
+)
+def test_cache_busted_leaves_query_bytes_intact(monkeypatch, url, expected):
+    monkeypatch.setattr(poll.time, "time", lambda: 42)
+    assert poll._cache_busted(url) == expected
+
+
+def test_cache_busted_value_is_digits():
+    q = dict(_busted_query(poll._cache_busted(FEED_URL)))
+    assert q["_pintxos"].isdigit()
+
+
+def test_poll_bypass_cache_requests_busted_url_and_resolves_links_against_original(
+    feed_id, monkeypatch
+):
+    with db() as conn:
+        conn.execute("UPDATE feeds SET bypass_cache = 1 WHERE id = ?", (feed_id,))
+    requested, bases = [], []
+    real_resolve = poll._resolve_entry_links
+
+    def fake_get(url):
+        requested.append(url)
+        return FakeResponse(SAMPLE)
+
+    def spy_resolve(parsed, base):
+        bases.append(base)
+        return real_resolve(parsed, base)
+
+    monkeypatch.setattr(poll, "_get", fake_get)
+    monkeypatch.setattr(poll, "_resolve_entry_links", spy_resolve)
+    monkeypatch.setattr(poll, "fetch_article", lambda link: (None, "error", []))
+    monkeypatch.setattr(
+        poll,
+        "summarize",
+        lambda text, title, url, respect_language=None, model=None: ("H", "S", model),
+    )
+    poll.poll_feed(feed_id)
+    assert len(requested) == 1
+    assert requested[0].startswith(FEED_URL + "?_pintxos=")
+    assert requested[0].split("=")[-1].isdigit()
+    assert bases == [FEED_URL]
+
+
+@pytest.mark.parametrize("value", [None, 0])
+def test_poll_without_bypass_cache_requests_exact_url(feed_id, calls, value):
+    with db() as conn:
+        conn.execute("UPDATE feeds SET bypass_cache = ? WHERE id = ?", (value, feed_id))
+    # the `calls` fixture's fake _get raises on any URL other than FEED_URL
+    poll.poll_feed(feed_id)
+    assert len(calls) > 0

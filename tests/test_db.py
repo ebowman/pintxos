@@ -613,3 +613,41 @@ def test_get_setting_paused_until_default_none(db):
     from pintxos.config import get_setting
 
     assert get_setting("PINTXOS_PAUSED_UNTIL") is None
+
+
+def test_connect_adds_bypass_cache_column_to_old_and_fresh_db(tmp_path, monkeypatch):
+    """bypass_cache is on a fresh DB and is added to an old-schema DB, staying NULL."""
+    monkeypatch.setenv("PINTXOS_DATA_DIR", str(tmp_path / "fresh"))
+    (tmp_path / "fresh").mkdir()
+    conn = connect()
+    try:
+        assert "bypass_cache" in {r["name"] for r in conn.execute("PRAGMA table_info(feeds)")}
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("PINTXOS_DATA_DIR", str(tmp_path))
+    old_conn = sqlite3.connect(db_path())
+    old_conn.executescript(
+        """
+        CREATE TABLE feeds (
+            id INTEGER PRIMARY KEY,
+            url TEXT UNIQUE NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            last_polled_at TEXT,
+            last_error TEXT
+        );
+        INSERT INTO feeds (url) VALUES ('https://example.com/feed.xml');
+        """
+    )
+    old_conn.commit()
+    old_conn.close()
+
+    for _ in range(2):  # second connect() is a no-op migration
+        conn = connect()
+        try:
+            cols = [r["name"] for r in conn.execute("PRAGMA table_info(feeds)")]
+            assert cols.count("bypass_cache") == 1
+            assert conn.execute("SELECT bypass_cache FROM feeds").fetchone()[0] is None
+        finally:
+            conn.close()

@@ -1480,9 +1480,9 @@ def test_feed_edit_page_shows_radios_and_global_patterns_box(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/feeds/1").text
 
-    # thirteen radios: three each for respect_language, filter_ads, ad_patterns_mode,
-    # two each for classify_topics and warn_volume
-    assert page.count('type="radio"') == 13
+    # fifteen radios: three each for respect_language, filter_ads, ad_patterns_mode,
+    # two each for classify_topics, bypass_cache and warn_volume
+    assert page.count('type="radio"') == 15
     assert 'name="filter_ads"' in page
     assert 'name="ad_patterns_mode"' in page
     assert 'name="ad_title_patterns"' in page
@@ -1529,7 +1529,7 @@ def test_feed_edit_post_off_and_patterns_saved(monkeypatch):
 
         # the edit page reflects what was just saved
         page = c.get("/feeds/1").text
-        assert page.count('type="radio"') == 13
+        assert page.count('type="radio"') == 15
         assert 'name="filter_ads" value="0" checked' in page
         assert 'name="filter_ads" value="" checked' not in page
         assert 'name="ad_patterns_mode" value="1" checked' in page
@@ -2392,7 +2392,7 @@ def test_feed_edit_radios_keep_their_controls(monkeypatch):
         c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
         page = c.get("/feeds/1").text
 
-    assert page.count('type="radio"') == 13
+    assert page.count('type="radio"') == 15
     assert ".field input, .field textarea { width: 100%; }" not in page
     assert "accent-color: var(--accent)" in page
 
@@ -3746,3 +3746,62 @@ def test_model_help_names_local_provider_on_settings_and_feed_edit_pages():
     with TestClient(app) as c:
         assert phrase in c.get("/settings").text
         assert phrase in c.get(f"/feeds/{feed_id}").text
+
+
+def _bypass_row():
+    with db() as conn:
+        return conn.execute(
+            "SELECT bypass_cache, typeof(bypass_cache) AS t, title FROM feeds WHERE id = 1"
+        ).fetchone()
+
+
+def test_feed_edit_page_bypass_cache_off_by_default(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/feeds/1").text
+    assert "Bypass feed cache" in page
+    assert 'name="bypass_cache" value="" checked' in page
+    assert 'name="bypass_cache" value="1" checked' not in page
+
+
+def test_feed_edit_post_bypass_cache_on_then_off(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post("/feeds/1", data={"bypass_cache": "1"}, follow_redirects=False)
+        assert resp.status_code == 303 and resp.headers["location"] == "/?msg=Saved"
+        row = _bypass_row()
+        assert row["bypass_cache"] == 1 and row["t"] == "integer"
+        page = c.get("/feeds/1").text
+        assert 'name="bypass_cache" value="1" checked' in page
+        assert 'name="bypass_cache" value="" checked' not in page
+
+        c.post("/feeds/1", data={"bypass_cache": "0"}, follow_redirects=False)
+        assert _bypass_row()["bypass_cache"] is None
+        page = c.get("/feeds/1").text
+        assert 'name="bypass_cache" value="" checked' in page
+        assert 'name="bypass_cache" value="1" checked' not in page
+
+
+def test_feed_edit_post_bypass_cache_invalid_rejected(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        c.post("/feeds/1", data={"bypass_cache": "1", "title": "Keep"}, follow_redirects=False)
+        resp = c.post(
+            "/feeds/1", data={"bypass_cache": "2", "title": "Changed"}, follow_redirects=False
+        )
+        assert resp.status_code == 303 and resp.headers["location"].startswith("/feeds/1?err=")
+        row = _bypass_row()
+        assert row["bypass_cache"] == 1 and row["title"] == "Keep"
+
+
+def test_feed_edit_post_without_bypass_cache_leaves_it_off(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        resp = c.post("/feeds/1", data={"title": "Hello"}, follow_redirects=False)
+        assert resp.status_code == 303
+        row = _bypass_row()
+        assert row["bypass_cache"] is None and row["title"] == "Hello"

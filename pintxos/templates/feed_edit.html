@@ -80,6 +80,14 @@
     </div>
   </div>
   <fieldset class="field">
+    <legend>Bypass feed cache</legend>
+    <div class="radios">
+      <label class="radio"><input type="radio" name="bypass_cache" value="" {% if feed.bypass_cache != 1 %}checked{% endif %}> Off</label>
+      <label class="radio"><input type="radio" name="bypass_cache" value="1" {% if feed.bypass_cache == 1 %}checked{% endif %}> On</label>
+    </div>
+    <div class="muted">For feeds whose server keeps serving a stale copy: adds a changing parameter to the feed URL on each poll.</div>
+  </fieldset>
+  <fieldset class="field">
     <legend>Volume</legend>
     <div class="radios">
       <label class="radio"><input type="radio" name="warn_volume" value="1" {% if warn_volume == 1 %}checked{% endif %}> On</label>

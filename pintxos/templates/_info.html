@@ -1,0 +1,1 @@
+{% macro info(id, what) %}<button type="button" class="info-btn" aria-label="More about {{ what }}" aria-expanded="false" aria-controls="{{ id }}">ℹ️</button><span class="info-box" id="{{ id }}" role="note">{{ caller() }}</span>{% endmacro %}

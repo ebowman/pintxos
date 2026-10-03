@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_info.html" import info %}
 {% block title %}Edit feed · Pintxøs{% endblock %}
 {% block head %}
 <style>
@@ -16,95 +17,127 @@
   </div>
   <div class="muted" id="feed-title-note" hidden>Leave blank to use the feed's own title.</div>
   <div class="muted url">{{ feed.url }}</div>
-  <div class="field">
-    <label for="feed_model">Model</label>
-    <input type="text" id="feed_model" name="model" value="{{ feed.model or '' }}" placeholder="Global default ({{ global_model }})">
-    <div class="muted">Leave blank to use the global model from <a href="/settings">Settings</a>.</div>
+  <nav class="set-nav" aria-label="Feed sections">
+    <a href="#model">Model</a>
+    <a href="#language">Language</a>
+    <a href="#ads">Ad filter</a>
+    <a href="#topics">Topic mute</a>
+    <a href="#fetch">Feed fetch</a>
+    <a href="#volume">Volume</a>
+    <a href="#filtered">Filtered</a>
+    {% if unreadable_items %}<a href="#unreadable">Unreadable</a>{% endif %}
+    <a href="#status">Status</a>
+  </nav>
+  <section class="set-card" id="model" aria-labelledby="model-h">
+    <h2 id="model-h">AI model</h2>
+    <div class="field">
+      <label for="feed_model">Model</label>
+      <input type="text" id="feed_model" name="model" value="{{ feed.model or '' }}" placeholder="Global default ({{ global_model }})">
+      <div class="muted">Leave blank to use the global model from <a href="/settings">Settings</a>.</div>
+    </div>
     <details class="muted"><summary>Model presets</summary>{% with model_input_id="feed_model" %}{% include "_model_presets.html" %}{% endwith %}</details>
-  </div>
-  <fieldset class="field">
-    <legend>Language</legend>
-    <div class="radios">
-      <label class="radio"><input type="radio" name="respect_language" value="" {% if feed.respect_language is none %}checked{% endif %}> <a href="/settings">Global</a> (currently {{ "on" if global_respect_language_on else "off" }})</label>
-      <label class="radio"><input type="radio" name="respect_language" value="1" {% if feed.respect_language == 1 %}checked{% endif %}> On</label>
-      <label class="radio"><input type="radio" name="respect_language" value="0" {% if feed.respect_language == 0 %}checked{% endif %}> Off</label>
+  </section>
+  <section class="set-card" id="language" aria-labelledby="language-h">
+    <div class="info-anchor">
+      <h2 id="language-h">Language</h2>
+      {% call info("info-language", "the language setting") %}On: headline and summary in the article's language. Off: always English.{% endcall %}
     </div>
-    <div class="muted">On: headline and summary in the article's language. Off: always English.</div>
-  </fieldset>
-  <fieldset class="field">
-    <legend>Ad filter</legend>
-    <div class="radios">
-      <label class="radio"><input type="radio" name="filter_ads" value="" {% if feed.filter_ads is none %}checked{% endif %}> <a href="/settings">Global</a> (currently {{ "on" if global_filter_ads_on else "off" }})</label>
-      <label class="radio"><input type="radio" name="filter_ads" value="1" {% if feed.filter_ads == 1 %}checked{% endif %}> On</label>
-      <label class="radio"><input type="radio" name="filter_ads" value="0" {% if feed.filter_ads == 0 %}checked{% endif %}> Off</label>
-    </div>
-  </fieldset>
-  <div class="patterns">
-    <fieldset class="field">
-      <legend>Extra title patterns</legend>
+    <fieldset class="field" aria-labelledby="language-h">
       <div class="radios">
-        <label class="radio"><input type="radio" name="ad_patterns_mode" value="" {% if feed.ad_patterns_mode is none %}checked{% endif %}> <a href="/settings">Global</a> patterns</label>
-        <label class="radio"><input type="radio" name="ad_patterns_mode" value="1" {% if feed.ad_patterns_mode == 1 %}checked{% endif %}> Global + this feed's patterns</label>
-        <label class="radio"><input type="radio" name="ad_patterns_mode" value="0" {% if feed.ad_patterns_mode == 0 %}checked{% endif %}> Off (no extra patterns for this feed)</label>
+        <label class="radio"><input type="radio" name="respect_language" value="" {% if feed.respect_language is none %}checked{% endif %}> <a href="/settings">Global</a> (currently {{ "on" if global_respect_language_on else "off" }})</label>
+        <label class="radio"><input type="radio" name="respect_language" value="1" {% if feed.respect_language == 1 %}checked{% endif %}> On</label>
+        <label class="radio"><input type="radio" name="respect_language" value="0" {% if feed.respect_language == 0 %}checked{% endif %}> Off</label>
       </div>
     </fieldset>
-    <div class="field">
-      <label for="global_patterns">Global patterns (applied)</label>
-      <textarea id="global_patterns" rows="3" readonly class="mono global-box">{{ global_patterns if global_patterns else "(none)" }}</textarea>
-    </div>
-    <div class="field">
-      <label for="ad_title_patterns">This feed's patterns</label>
-      <textarea id="ad_title_patterns" name="ad_title_patterns" rows="4" class="mono">{{ ad_title_patterns }}</textarea>
-      <div class="muted">One regex per line, applied in addition to the global patterns</div>
-    </div>
-  </div>
-  <div class="topic-mute">
-    <fieldset class="field">
-      <legend>Topic mute</legend>
+  </section>
+  <section class="set-card" id="ads" aria-labelledby="ads-h">
+    <h2 id="ads-h">Ad filter</h2>
+    <fieldset class="field" aria-labelledby="ads-h">
       <div class="radios">
-        <label class="radio"><input type="radio" name="classify_topics" value="0" {% if classify_topics != 1 %}checked{% endif %}> Off</label>
-        <label class="radio"><input type="radio" name="classify_topics" value="1" {% if classify_topics == 1 %}checked{% endif %}> On</label>
+        <label class="radio"><input type="radio" name="filter_ads" value="" {% if feed.filter_ads is none %}checked{% endif %}> <a href="/settings">Global</a> (currently {{ "on" if global_filter_ads_on else "off" }})</label>
+        <label class="radio"><input type="radio" name="filter_ads" value="1" {% if feed.filter_ads == 1 %}checked{% endif %}> On</label>
+        <label class="radio"><input type="radio" name="filter_ads" value="0" {% if feed.filter_ads == 0 %}checked{% endif %}> Off</label>
       </div>
-      <div class="muted">Adds one small AI call per new item on this feed; keyword patterns above cost nothing.</div>
     </fieldset>
-    <div class="field topic-checkboxes">
-      <label>Mute topics</label>
-      {% for topic in topics %}
-      <div class="field-checkbox">
-        <label title="{{ topic.definition }}"><input type="checkbox" name="mute_topics" value="{{ topic.slug }}" {% if topic.slug in mute_topics %}checked{% endif %}> {{ topic.name }}{% if topic.percent is not none %} ({{ topic.percent }}%){% endif %}</label>
+    <div class="patterns">
+      <fieldset class="field">
+        <legend>Extra title patterns</legend>
+        <div class="radios">
+          <label class="radio"><input type="radio" name="ad_patterns_mode" value="" {% if feed.ad_patterns_mode is none %}checked{% endif %}> <a href="/settings">Global</a> patterns</label>
+          <label class="radio"><input type="radio" name="ad_patterns_mode" value="1" {% if feed.ad_patterns_mode == 1 %}checked{% endif %}> Global + this feed's patterns</label>
+          <label class="radio"><input type="radio" name="ad_patterns_mode" value="0" {% if feed.ad_patterns_mode == 0 %}checked{% endif %}> Off (no extra patterns for this feed)</label>
+        </div>
+      </fieldset>
+      <div class="field">
+        <label for="global_patterns">Global patterns (applied)</label>
+        <textarea id="global_patterns" rows="3" readonly class="mono global-box">{{ global_patterns if global_patterns else "(none)" }}</textarea>
       </div>
-      {% endfor %}
-      {% if classified_total > 0 %}
-      <div class="muted">of {{ classified_total }} classified</div>
-      {% endif %}
+      <div class="field">
+        <div class="info-anchor">
+          <label for="ad_title_patterns">This feed's patterns</label>
+          {% call info("info-feed-patterns", "this feed's patterns") %}One regex per line, applied in addition to the global patterns.{% endcall %}
+        </div>
+        <textarea id="ad_title_patterns" name="ad_title_patterns" rows="4" class="mono">{{ ad_title_patterns }}</textarea>
+      </div>
     </div>
-  </div>
-  <fieldset class="field">
-    <legend>Bypass feed cache</legend>
-    <div class="radios">
-      <label class="radio"><input type="radio" name="bypass_cache" value="" {% if feed.bypass_cache != 1 %}checked{% endif %}> Off</label>
-      <label class="radio"><input type="radio" name="bypass_cache" value="1" {% if feed.bypass_cache == 1 %}checked{% endif %}> On</label>
+  </section>
+  <section class="set-card" id="topics" aria-labelledby="topics-h">
+    <h2 id="topics-h">Topic mute</h2>
+    <div class="topic-mute">
+      <fieldset class="field" aria-labelledby="topics-h">
+        <div class="radios">
+          <label class="radio"><input type="radio" name="classify_topics" value="0" {% if classify_topics != 1 %}checked{% endif %}> Off</label>
+          <label class="radio"><input type="radio" name="classify_topics" value="1" {% if classify_topics == 1 %}checked{% endif %}> On</label>
+        </div>
+        <div class="muted">Adds one small AI call per new item on this feed; keyword patterns above cost nothing.</div>
+      </fieldset>
+      <div class="field topic-checkboxes">
+        <label>Mute topics</label>
+        {% for topic in topics %}
+        <div class="field-checkbox">
+          <label title="{{ topic.definition }}"><input type="checkbox" name="mute_topics" value="{{ topic.slug }}" {% if topic.slug in mute_topics %}checked{% endif %}> {{ topic.name }}{% if topic.percent is not none %} ({{ topic.percent }}%){% endif %}</label>
+        </div>
+        {% endfor %}
+        {% if classified_total > 0 %}
+        <div class="muted">of {{ classified_total }} classified</div>
+        {% endif %}
+      </div>
     </div>
-    <div class="muted">For feeds whose server keeps serving a stale copy: adds a changing parameter to the feed URL on each poll.</div>
-  </fieldset>
-  <fieldset class="field">
-    <legend>Volume</legend>
-    <div class="radios">
-      <label class="radio"><input type="radio" name="warn_volume" value="1" {% if warn_volume == 1 %}checked{% endif %}> On</label>
-      <label class="radio"><input type="radio" name="warn_volume" value="0" {% if warn_volume == 0 %}checked{% endif %}> Off</label>
-    </div>
-    <div class="muted">Adds a warning article to this feed's output when it produces {{ warn_at }} or more summaries in a day. The threshold is set on the <a href="/settings">Settings</a> page.</div>
+  </section>
+  <section class="set-card" id="fetch" aria-label="Feed fetch">
+    <h2>Feed fetch</h2>
+    <fieldset class="field">
+      <legend class="info-anchor">Bypass feed cache {% call info("info-bypass", "bypassing the feed cache") %}For feeds whose server keeps serving a stale copy: adds a changing parameter to the feed URL on each poll.{% endcall %}</legend>
+      <div class="radios">
+        <label class="radio"><input type="radio" name="bypass_cache" value="" {% if feed.bypass_cache != 1 %}checked{% endif %}> Off</label>
+        <label class="radio"><input type="radio" name="bypass_cache" value="1" {% if feed.bypass_cache == 1 %}checked{% endif %}> On</label>
+      </div>
+    </fieldset>
+  </section>
+  <section class="set-card" id="volume" aria-label="Volume">
+    <h2>Volume</h2>
+    <fieldset class="field">
+      <legend class="info-anchor">Volume warning {% call info("info-volume", "the volume warning") %}Adds a warning article to this feed's output when it produces {{ warn_at }} or more summaries in a day. The threshold is set on the <a href="/settings">Settings</a> page.{% endcall %}</legend>
+      <div class="radios">
+        <label class="radio"><input type="radio" name="warn_volume" value="1" {% if warn_volume == 1 %}checked{% endif %}> On</label>
+        <label class="radio"><input type="radio" name="warn_volume" value="0" {% if warn_volume == 0 %}checked{% endif %}> Off</label>
+      </div>
+    </fieldset>
     <div class="field field-narrow">
-      <label for="daily_budget">Max summaries per day</label>
+      <div class="info-anchor">
+        <label for="daily_budget">Max summaries per day</label>
+        {% call info("info-budget", "the daily summary budget") %}Blank means the default (PINTXOS_DAILY_BUDGET, 200). Entries beyond the budget are skipped until the next day and listed under Filtered at last poll.{% endcall %}
+      </div>
       <input type="number" id="daily_budget" name="daily_budget" min="0" step="1" value="{{ daily_budget if daily_budget is not none else '' }}">
-      <div class="muted">Blank means the default (PINTXOS_DAILY_BUDGET, 200). Entries beyond the budget are skipped until the next day and listed under Filtered at last poll.</div>
     </div>
-  </fieldset>
-  <button type="submit" class="btn-primary">Save</button>
-  <a href="/" class="cancel">Cancel</a>
+  </section>
+  <div class="set-actions">
+    <button type="submit" class="btn-primary">Save</button>
+    <a href="/" class="cancel">Cancel</a>
+  </div>
 </form>
-<div class="field filter-log">
-  <label>Filtered at last poll{% if feed.last_polled_at %} <span class="muted" title="{{ feed.last_polled_at }}">({{ feed.last_polled_at | ago }} ago)</span>{% endif %}</label>
+<section class="set-card filter-log" id="filtered" aria-label="Filtered at last poll">
+  <h2>Filtered at last poll{% if feed.last_polled_at %} <span class="muted" title="{{ feed.last_polled_at }}">({{ feed.last_polled_at | ago }} ago)</span>{% endif %}</h2>
   {% if not feed.last_polled_at %}
   <div class="muted">Not polled yet</div>
   {% elif not last_filtered %}
@@ -125,10 +158,10 @@
   </ul>
   {% endif %}
   <div class="muted">Rule changes apply from the next poll.</div>
-</div>
+</section>
 {% if unreadable_items %}
-<div class="field filter-log">
-  <label>Unreadable</label>
+<section class="set-card filter-log" id="unreadable" aria-label="Unreadable">
+  <h2>Unreadable</h2>
   <ul class="filter-log-list">
     {% for entry in unreadable_items %}
     <li>
@@ -136,16 +169,21 @@
     </li>
     {% endfor %}
   </ul>
-</div>
+</section>
 {% endif %}
-<h2>Status</h2>
-<p>{% with fetch_status=fetch_status %}{% include "_fetch_status.html" %}{% endwith %}</p>
-<div class="muted">Summaries: {{ summaries_today }} paid today, {{ kept_today }} new items kept, {{ summaries_total }} total</div>
-{% if item_stats['items'] %}<div class="muted">{{ item_stats['items'] }} items over {{ item_stats.days }} days ({{ item_stats.per_day|round(1) }}/day){% if item_stats.avg_words is not none %} · avg {{ item_stats.avg_words }} words per fetched article{% endif %}</div>{% endif %}
-{% if fallback_count > 0 %}
-<form method="post" action="/feeds/{{ feed.id }}/retry-fallback" class="retry-fallback">
-  <button type="submit" class="btn-tint-neutral">Retry {{ fallback_count }} item{{ "s" if fallback_count != 1 else "" }}</button>
-  <div class="muted">Re-fetches and re-summarizes items that fell back to the feed's own text or have no summary yet, each costing one summary call. Useful after adding subscription cookies or once a failing AI service is back.</div>
-</form>
-{% endif %}
+<section class="set-card" id="status" aria-label="Status">
+  <h2>Status</h2>
+  <p>{% with fetch_status=fetch_status %}{% include "_fetch_status.html" %}{% endwith %}</p>
+  <div class="muted">Summaries: {{ summaries_today }} paid today, {{ kept_today }} new items kept, {{ summaries_total }} total</div>
+  {% if item_stats['items'] %}<div class="muted">{{ item_stats['items'] }} items over {{ item_stats.days }} days ({{ item_stats.per_day|round(1) }}/day){% if item_stats.avg_words is not none %} · avg {{ item_stats.avg_words }} words per fetched article{% endif %}</div>{% endif %}
+  {% if fallback_count > 0 %}
+  <form method="post" action="/feeds/{{ feed.id }}/retry-fallback" class="retry-fallback">
+    <button type="submit" class="btn-tint-neutral">Retry {{ fallback_count }} item{{ "s" if fallback_count != 1 else "" }}</button>
+    <div class="info-anchor">
+      <span class="muted">Re-fetches and re-summarizes stuck items.</span>
+      {% call info("info-retry", "retrying items") %}Re-fetches and re-summarizes items that fell back to the feed's own text or have no summary yet, each costing one summary call. Useful after adding subscription cookies or once a failing AI service is back.{% endcall %}
+    </div>
+  </form>
+  {% endif %}
+</section>
 {% endblock %}

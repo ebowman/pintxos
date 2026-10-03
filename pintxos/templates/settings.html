@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_info.html" import info %}
 {% block title %}Settings · Pintxøs{% endblock %}
 {% block head %}
 <style>
@@ -11,29 +12,9 @@
               [card: AI model] [card: API keys] [card: Polling] [card: Filters]  (one form, Save + Test)
               [card: Paywall] (own form)   version
      Principle: label, control and at most one short line; everything longer sits behind the info button. */
-  .set-nav { display: flex; gap: 0.25rem; flex-wrap: nowrap; overflow-x: auto; margin: 0 0 1.25rem; padding: 0.5rem 0; background: var(--bg); border-bottom: 1px solid var(--border); }
-  .set-nav a { flex: none; padding: 0.25rem 0.75rem; border-radius: 999px; color: var(--text-muted); text-decoration: none; font-size: 0.875rem; }
-  .set-nav a:hover, .set-nav a:focus-visible { color: var(--accent); background: #eef2ff; }
-  @media (min-width: 720px) { .set-nav { position: sticky; top: 0; z-index: 10; } }
-  @media (max-width: 719px) { .set-nav { flex-wrap: wrap; overflow-x: visible; } }
 
   .settings-form { display: block; }
-  .set-card { display: block; margin: 0 0 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: 10px; min-width: 0; scroll-margin-top: 4.5rem; }
-  @media (min-width: 720px) { .set-card { padding: 1.5rem; } }
-  .set-card h2 { font-size: 1rem; font-weight: 600; margin: 0 0 1rem; padding: 0; border: 0; }
-  .set-card .field { margin-bottom: 1.25rem; }
-  .set-card .field:last-child { margin-bottom: 0; }
-  .set-card .field .info-anchor { margin-bottom: 0.3rem; }
-  .set-card .field .info-anchor label { margin: 0; }
-  .set-card .field-checkbox .info-anchor { margin-bottom: 0; }
-  .set-grid { display: grid; gap: 1.25rem 1.5rem; grid-template-columns: 1fr; margin-bottom: 1.25rem; }
-  @media (min-width: 720px) { .set-grid { grid-template-columns: 1fr 1fr; } }
-  .set-grid .field { margin-bottom: 0; }
-  .set-actions { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 1rem; position: relative; }
-  .set-actions .info-anchor { position: static; }
   .set-steps { margin: 0.5rem 0; padding-left: 1.25rem; font-size: 0.875rem; }
-  .set-card details { margin: 0 0 1rem; }
-  .set-card summary { cursor: pointer; font-size: 0.875rem; color: var(--accent); margin-bottom: 0.5rem; }
   .set-domains { margin: 0 0 1rem; }
   /* Presets table on phones: stack each preset (name + Use, cost, notes) at full width. */
   @media (max-width: 600px) {
@@ -48,7 +29,6 @@
   .set-version { margin: 1.5rem 0 0; }
 </style>
 {% endblock %}
-{% macro info(id, what) %}<button type="button" class="info-btn" aria-label="More about {{ what }}" aria-expanded="false" aria-controls="{{ id }}">ℹ️</button><div class="info-box" id="{{ id }}" role="note">{{ caller() }}</div>{% endmacro %}
 {% block content %}
 <h1>Settings</h1>
 <nav class="set-nav" aria-label="Settings sections">
@@ -81,6 +61,11 @@
       </div>
       <input type="text" id="local_llm_url" name="local_llm_url" value="{{ local_llm_url }}" placeholder="http://127.0.0.1:11434/v1" {% if local_llm_url_env %}disabled{% endif %}>
       {% if local_llm_url_env %}<div class="muted">Set by PINTXOS_LOCAL_LLM_URL in the environment.</div>{% endif %}
+    </div>
+    <div class="set-actions">
+      <button type="submit" class="btn-primary">Save</button>
+      <button type="submit" formaction="/settings/test" formmethod="post" formnovalidate>Test saved model</button>
+      <span class="info-anchor">{% call info("info-test", "testing the model") %}Tests the saved model and key; save first.{% endcall %}</span>
     </div>
   </section>
 
@@ -178,8 +163,6 @@
 
   <div class="set-actions">
     <button type="submit" class="btn-primary">Save</button>
-    <button type="submit" formaction="/settings/test" formmethod="post" formnovalidate>Test saved model</button>
-    <span class="info-anchor">{% call info("info-test", "testing the model") %}Tests the saved model and key; save first.{% endcall %}</span>
   </div>
 </form>
 

@@ -410,6 +410,21 @@ def test_settings_page_shows_warn_defaults():
     assert 'name="warn_hard_at" min="1" value="180"' in page
 
 
+def test_settings_ai_card_has_save_and_test_row_in_one_form():
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert page.count('<form method="post" action="/settings"') == 1
+    ai = page[page.index('<section class="set-card" id="ai"'):page.index('id="keys"')]
+    assert '<button type="submit" class="btn-primary">Save</button>' in ai
+    assert 'formaction="/settings/test"' in ai
+    assert ai.index(">Save</button>") < ai.index('formaction="/settings/test"')
+    assert page.count('id="info-test"') == 1 and 'id="info-test"' in ai
+    bottom = page[page.index("</section>", page.index('id="filters"')):page.index("</form>")]
+    assert 'class="set-actions"' in bottom and ">Save</button>" in bottom
+    assert "/settings/test" not in bottom
+
+
 def test_settings_page_has_jump_nav_info_buttons_and_all_fields():
     with TestClient(app) as c:
         page = c.get("/settings").text
@@ -439,6 +454,48 @@ def test_settings_page_has_jump_nav_info_buttons_and_all_fields():
     assert 'action="/settings/cookies"' in page
     assert 'formaction="/settings/test"' in page
     assert "Accessing Pay-Walled Content" in page
+
+
+def test_feed_edit_page_has_jump_nav_info_buttons_and_all_fields(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        page = c.get("/feeds/1").text
+
+    nav = re.search(r'<nav class="set-nav"[^>]*>(.*?)</nav>', page, re.S).group(1)
+    links = re.findall(r'href="#([^"]+)"', nav)
+    assert links == ["model", "language", "ads", "topics", "fetch", "volume", "filtered", "status"]
+    for target in links:
+        assert re.search(rf'<section class="set-card[^"]*" id="{target}"', page)
+    assert "unreadable" not in links
+
+    ids = []
+    for tag in re.findall(r'<button type="button" class="info-btn"[^>]*>', page):
+        assert 'aria-expanded="false"' in tag
+        ids.append(re.search(r'aria-controls="([^"]+)"', tag).group(1))
+    assert ids
+    assert len(ids) == len(set(ids))
+    for target in ids:
+        assert f'<span class="info-box" id="{target}"' in page
+    assert "info-presets-feed_model" in ids
+
+    for name in (
+        "title", "model", "respect_language", "filter_ads", "ad_patterns_mode",
+        "ad_title_patterns", "classify_topics", "mute_topics", "bypass_cache",
+        "warn_volume", "daily_budget",
+    ):
+        assert f'name="{name}"' in page
+    assert '<button type="submit" class="btn-primary">Save</button>' in page
+    assert '<a href="/" class="cancel">Cancel</a>' in page
+
+    # every fieldset is named: legend first, or aria-labelledby pointing at an existing id
+    fieldsets = re.findall(r"<fieldset([^>]*)>\s*(<legend)?", page)
+    assert fieldsets
+    for attrs, legend in fieldsets:
+        if legend:
+            continue
+        target = re.search(r'aria-labelledby="([^"]+)"', attrs).group(1)
+        assert f'id="{target}"' in page
 
 
 def test_settings_page_shows_version_with_release_link(monkeypatch):

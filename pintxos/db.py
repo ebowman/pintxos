@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS feeds (
     topic_counts TEXT,
     warn_volume INTEGER,
     daily_budget INTEGER,
-    model TEXT
+    model TEXT,
+    bypass_cache INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -116,6 +117,9 @@ def connect() -> sqlite3.Connection:
         ("daily_budget", "INTEGER"),
         # NULL = follow the global PINTXOS_MODEL setting; otherwise an explicit per-feed model.
         ("model", "TEXT"),
+        # NULL/0 = fetch the feed URL as-is; 1 = add a changing query parameter so a
+        # CDN cache is bypassed.
+        ("bypass_cache", "INTEGER"),
     ):
         if name not in cols:
             conn.execute(f"ALTER TABLE feeds ADD COLUMN {name} {ddl}")

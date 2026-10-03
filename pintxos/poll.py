@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http.cookiejar import MozillaCookieJar
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import curl_cffi.requests
 import feedparser
@@ -88,6 +88,21 @@ _BLOCKED_RETRIES = 3
 # the same failure would just repeat on every other feed, so polling stops
 # everywhere for PAUSE_MINUTES rather than burning through them one by one.
 PAUSE_MINUTES = 30
+
+
+def _cache_busted(url: str) -> str:
+    """`url` with a `_pintxos=<unix time>` query parameter, so a CDN that ignores
+    request cache headers still treats each fetch as a new URL. Existing query
+    parameters (untouched) and the fragment are kept; an existing `_pintxos` is replaced."""
+    parts = urlsplit(url)
+    # Work on the raw query so everything the feed URL already says stays byte-for-byte.
+    kept = [
+        seg
+        for seg in parts.query.split("&")
+        if seg and seg != "_pintxos" and not seg.startswith("_pintxos=")
+    ]
+    kept.append(f"_pintxos={int(time.time())}")
+    return urlunsplit(parts._replace(query="&".join(kept)))
 
 
 def _get(url: str) -> curl_cffi.requests.Response:
@@ -731,7 +746,7 @@ def poll_feed(feed_id: int) -> bool:
 
         try:
             _status[feed_id] = "Fetching feed…"
-            resp = _get(url)
+            resp = _get(_cache_busted(url) if feed["bypass_cache"] == 1 else url)
             if resp.status_code // 100 != 2:
                 raise ValueError(f"HTTP {resp.status_code}")
             parsed = feedparser.parse(resp.content)

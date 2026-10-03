@@ -203,6 +203,27 @@
     /* The filter log lists whole titles: full width, no bullets. */
     .filter-log { max-width: none; }
     .filter-log-list { list-style: none; padding-left: 0; margin: 0.3rem 0; }
+
+    /* Shared info component (the (i) button): <span class="info-anchor"> holds a label, a
+       <button class="info-btn" aria-expanded aria-controls> and a <div class="info-box" id>. The
+       box is absolutely placed under the anchor row and spans its width (capped), so it can never
+       overflow a narrow screen. Opens on click/tap, and on hover where a real pointer exists.
+       Placed last so it beats the generic button rules above. */
+    .info-anchor { position: relative; display: flex; align-items: center; gap: 0.4rem; }
+    .info-btn { flex: none; font-size: 0.8125rem; line-height: 1; padding: 0.2rem 0.3rem; border-color: transparent; background: transparent; border-radius: 999px; }
+    .info-btn:hover, .info-btn[aria-expanded="true"] { background: #eef2ff; border-color: #d6ddfb; }
+    .info-box {
+      display: none; position: absolute; z-index: 20; left: 0; top: 100%;
+      width: 100%; max-width: 26rem; margin-top: 0.15rem; padding: 0.75rem 0.875rem;
+      background: #ffffff; color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+      font-size: 0.875rem; font-weight: 400; line-height: 1.45; overflow-wrap: anywhere;
+    }
+    .info-box.open { display: block; }
+    .info-box p { margin: 0 0 0.5rem; }
+    .info-box > :last-child { margin-bottom: 0; }
+    @media (hover: hover) {
+      .info-anchor:has(.info-btn:hover) .info-box, .info-box:hover { display: block; }
+    }
   </style>
 </head>
 <body>
@@ -234,6 +255,32 @@
     }
     // Flash text lives in ?msg=/?err=; strip it after the first render so reload/back/bookmark stay clean.
     if (/[?&](msg|err)=/.test(location.search)) history.replaceState(null, "", location.pathname);
+    // Shared info boxes: one open at a time; Escape and outside tap close them.
+    (function () {
+      function closeAll(except) {
+        document.querySelectorAll(".info-btn[aria-expanded=true]").forEach(function (b) {
+          if (b === except) return;
+          b.setAttribute("aria-expanded", "false");
+          var box = document.getElementById(b.getAttribute("aria-controls"));
+          if (box) box.classList.remove("open");
+        });
+      }
+      document.addEventListener("click", function (e) {
+        var btn = e.target.closest ? e.target.closest(".info-btn") : null;
+        if (!btn) { if (!(e.target.closest && e.target.closest(".info-box"))) closeAll(null); return; }
+        var box = document.getElementById(btn.getAttribute("aria-controls"));
+        var open = btn.getAttribute("aria-expanded") !== "true";
+        closeAll(open ? btn : null);
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        if (box) box.classList.toggle("open", open);
+      });
+      // Hover shows a box by CSS; make sure no click-opened box stays visible beside it.
+      document.addEventListener("mouseover", function (e) {
+        var btn = e.target.closest ? e.target.closest(".info-btn") : null;
+        if (btn && window.matchMedia("(hover: hover)").matches) closeAll(btn);
+      });
+      document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeAll(null); });
+    })();
   </script>
 </body>
 </html>

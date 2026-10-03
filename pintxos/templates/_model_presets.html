@@ -1,6 +1,11 @@
+{% from "_info.html" import info %}
 {% set target = model_input_id|default("model") %}
 <div class="muted">
-  <p>Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic, names starting with <code>local:</code> go to your own OpenAI-compatible server such as Ollama, at the address set as &ldquo;Local LLM URL&rdquo; on the Settings page.</p>
+  <div class="field">
+  <div class="info-anchor">
+    <span>Which provider is used?</span>
+    {% call info("info-presets-" ~ target, "model providers") %}Names with a slash (vendor/model) go to OpenRouter, names without go to Anthropic, names starting with <code>local:</code> go to your own OpenAI-compatible server such as Ollama, at the address set as &ldquo;Local LLM URL&rdquo; on the Settings page.{% endcall %}
+  </div>
   <table>
     <colgroup><col style="width:44%"><col style="width:7.5rem"><col></colgroup>
     <thead>
@@ -34,5 +39,6 @@
       </tr>
     </tbody>
   </table>
+  </div>
   <p>Prices from OpenRouter, September 2026. Full list at <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>.</p>
 </div>

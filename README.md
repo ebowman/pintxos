@@ -38,6 +38,7 @@ Same story, no guessing games. Sanity restored. Point Pintxøs at a feed once, a
 - **Word count and reading time** on every item, so you know what you are clicking into.
 - **Topic mute.** Tick any of 17 media categories (arts, sport, health, weather, ...) to mute them entirely.
 - **Volume warning and daily budget.** A feed that produces an unusually high number of summaries gets a warning article in its output feed, once per day. Set a per-feed daily limit if you want a hard cap.
+- **Bypass feed cache.** Some publishers' CDNs keep serving a stale feed: the London Review of Books caches its RSS for 14 days but publishes fortnightly, so new issues arrive late or not at all. Switch this on from the feed's Edit page and each poll adds `_pintxos=<unix time>` to the feed URL, keeping any query parameters it already has. Off by default; article fetches are unaffected.
 - **Copy and share.** Every feed item links to a page with one-tap Copy (rich text: bold headline, italic stats, small model name; plain text for iMessage/WhatsApp) and Share buttons, so you can pass an article on from a mobile feed reader.
 
 ## How to use it

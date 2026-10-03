@@ -410,6 +410,21 @@ def test_settings_page_shows_warn_defaults():
     assert 'name="warn_hard_at" min="1" value="180"' in page
 
 
+def test_settings_ai_card_has_save_and_test_row_in_one_form():
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    assert page.count('<form method="post" action="/settings"') == 1
+    ai = page[page.index('<section class="set-card" id="ai"'):page.index('id="keys"')]
+    assert '<button type="submit" class="btn-primary">Save</button>' in ai
+    assert 'formaction="/settings/test"' in ai
+    assert ai.index(">Save</button>") < ai.index('formaction="/settings/test"')
+    assert page.count('id="info-test"') == 1 and 'id="info-test"' in ai
+    bottom = page[page.index("</section>", page.index('id="filters"')):page.index("</form>")]
+    assert 'class="set-actions"' in bottom and ">Save</button>" in bottom
+    assert "/settings/test" not in bottom
+
+
 def test_settings_page_has_jump_nav_info_buttons_and_all_fields():
     with TestClient(app) as c:
         page = c.get("/settings").text

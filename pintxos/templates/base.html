@@ -224,6 +224,29 @@
     @media (hover: hover) {
       .info-anchor:has(.info-btn:hover) .info-box, .info-box:hover { display: block; }
     }
+
+    /* Shared settings/feed-edit card rules. Page head blocks render BEFORE this stylesheet, so page-local overrides of these rules must have higher specificity or live here, below. */
+    .set-nav { display: flex; gap: 0.25rem; flex-wrap: nowrap; overflow-x: auto; margin: 0 0 1.25rem; padding: 0.5rem 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+    .set-nav a { flex: none; padding: 0.25rem 0.75rem; border-radius: 999px; color: var(--text-muted); text-decoration: none; font-size: 0.875rem; }
+    .set-nav a:hover, .set-nav a:focus-visible { color: var(--accent); background: #eef2ff; }
+    @media (min-width: 720px) { .set-nav { position: sticky; top: 0; z-index: 10; } }
+    @media (max-width: 719px) { .set-nav { flex-wrap: wrap; overflow-x: visible; } }
+    .set-card { display: block; margin: 0 0 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: 10px; min-width: 0; scroll-margin-top: 4.5rem; }
+    @media (min-width: 720px) { .set-card { padding: 1.5rem; } }
+    .set-card h2 { font-size: 1rem; font-weight: 600; margin: 0 0 1rem; padding: 0; border: 0; }
+    .set-card .field { margin-bottom: 1.25rem; }
+    .set-card .field:last-child { margin-bottom: 0; }
+    .set-card .field .info-anchor { margin-bottom: 0.3rem; }
+    .set-card .field .info-anchor label { margin: 0; }
+    .set-card .field-checkbox .info-anchor { margin-bottom: 0; }
+    .set-grid { display: grid; gap: 1.25rem 1.5rem; grid-template-columns: 1fr; margin-bottom: 1.25rem; }
+    @media (min-width: 720px) { .set-grid { grid-template-columns: 1fr 1fr; } }
+    .set-grid .field { margin-bottom: 0; }
+    .set-actions { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 1rem; position: relative; }
+    .set-actions .info-anchor { position: static; }
+    .set-card .set-actions { margin-bottom: 0; }
+    .set-card details { margin: 0 0 1rem; }
+    .set-card summary { cursor: pointer; font-size: 0.875rem; color: var(--accent); margin-bottom: 0.5rem; }
   </style>
 </head>
 <body>

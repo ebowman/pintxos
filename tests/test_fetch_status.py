@@ -133,14 +133,9 @@ def _render(fetch_status):
     return templates.env.get_template("_fetch_status.html").render(fetch_status=fetch_status)
 
 
-def test_partial_renders_escaped_tooltip_icon_separator_link_and_muted_ok():
+def test_partial_renders_info_component_separator_link_and_muted_ok():
     entries = [
-        {
-            "text": "OK",
-            "tooltip": "All 10 articles read in full.",
-            "link": None,
-            "ok": True,
-        },
+        {"text": "OK", "tooltip": "All 10 articles read in full.", "link": None, "ok": True},
         {
             "text": "3 paywalled",
             "tooltip": "3 of 10 articles came back as a teaser <b>&",
@@ -148,15 +143,38 @@ def test_partial_renders_escaped_tooltip_icon_separator_link_and_muted_ok():
             "ok": False,
         },
     ]
-    html = _render(entries)
+    html = templates.env.get_template("_fetch_status.html").render(
+        fetch_status=entries, info_prefix="fs-7"
+    )
 
-    assert 'title="All 10 articles read in full."' in html
-    assert 'title="3 of 10 articles came back as a teaser &lt;b&gt;&amp;"' in html
-    assert "ℹ️" in html
+    assert "title=" not in html
+    assert "info-icon" not in html
+    for n in (1, 2):
+        assert f'aria-expanded="false" aria-controls="fs-7-{n}"' in html
+    assert html.count('<button type="button" class="info-btn"') == 2
+    assert '<span class="info-box" id="fs-7-1" role="note">All 10 articles read in full.</span>' in html
+    assert (
+        '<span class="info-box" id="fs-7-2" role="note">'
+        "3 of 10 articles came back as a teaser &lt;b&gt;&amp;</span>"
+    ) in html
     assert " · " in html
     assert 'href="/settings#paywall"' in html
     assert ">add login<" in html
-    assert 'class="info muted"' in html
+    assert '<span class="muted">OK</span>' in html
+    assert "<span>3 paywalled</span>" in html
+
+
+def test_partial_prefixes_keep_ids_distinct_between_feeds():
+    entry = [{"text": "OK", "tooltip": "t", "link": None, "ok": True}]
+    tpl = templates.env.get_template("_fetch_status.html")
+    a = tpl.render(fetch_status=entry, info_prefix="fs-1")
+    b = tpl.render(fetch_status=entry, info_prefix="fs-2")
+    assert 'id="fs-1-1"' in a and 'id="fs-2-1"' in b and 'id="fs-1-1"' not in b
+
+
+def test_partial_empty_tooltip_renders_no_button():
+    html = _render([{"text": "-", "tooltip": "", "link": None, "ok": True}])
+    assert "info-btn" not in html and ">-<" in html
 
 
 def test_partial_single_entry_has_no_separator():

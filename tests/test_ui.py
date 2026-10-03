@@ -2861,8 +2861,7 @@ def test_status_cell_shows_paywalled_with_tooltip_and_settings_link(monkeypatch)
         page = c.get("/").text
 
     assert "3 paywalled" in page
-    assert "ℹ️" in page
-    assert 'title="' in page
+    assert 'aria-controls="fs-1-1"' in page
     assert "no login cookies are saved for" in page
     assert 'href="/settings#paywall"' in page
     assert "add login" in page
@@ -2955,8 +2954,7 @@ def test_status_cell_shows_ok_muted_for_clean_feed(monkeypatch):
 
         page = c.get("/").text
 
-    assert 'class="info muted"' in page
-    assert ">OK " in page
+    assert '<span class="muted">OK</span>' in page
 
 
 def test_feed_row_endpoint_matches_status_cell_on_index(monkeypatch):
@@ -2987,8 +2985,7 @@ def test_feed_edit_page_status_shows_paywalled_with_tooltip_and_settings_link(mo
 
     assert "<h2>Status</h2>" in page
     assert "3 paywalled" in page
-    assert "ℹ️" in page
-    assert 'title="' in page
+    assert 'aria-controls="fs-1-1"' in page
     assert "no login cookies are saved for" in page
     assert 'href="/settings#paywall"' in page
     assert "add login" in page
@@ -3033,8 +3030,7 @@ def test_feed_edit_page_status_shows_ok_muted_for_clean_feed(monkeypatch):
         page = c.get("/feeds/1").text
 
     assert "<h2>Status</h2>" in page
-    assert 'class="info muted"' in page
-    assert ">OK " in page
+    assert '<span class="muted">OK</span>' in page
 
 
 def test_feed_edit_page_status_excludes_muted_items(monkeypatch):
@@ -3862,3 +3858,37 @@ def test_feed_edit_post_without_bypass_cache_leaves_it_off(monkeypatch):
         assert resp.status_code == 303
         row = _bypass_row()
         assert row["bypass_cache"] is None and row["title"] == "Hello"
+
+
+def _fs_ids(html):
+    return re.findall(r'aria-controls="(fs-[^"]+)"', html)
+
+
+def test_index_fetch_status_info_ids_are_unique_across_feeds(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/a.xml"}, follow_redirects=False)
+        c.post("/feeds", data={"url": "https://example.com/b.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth=None, fetch_status="teaser")
+        _insert_item(2, "h1", auth=None, fetch_status="teaser")
+        page = c.get("/").text
+
+    ids = re.findall(r'\bid="([^"]+)"', page)
+    assert len(ids) == len(set(ids))
+    fs = _fs_ids(page)
+    assert len(fs) >= 2 and len(fs) == len(set(fs))
+    assert any(i.startswith("fs-1-") for i in fs) and any(i.startswith("fs-2-") for i in fs)
+
+
+def test_feed_edit_status_card_uses_info_component_without_id_collisions(monkeypatch):
+    monkeypatch.setattr(app_module, "poll_one", lambda feed_id: None)
+    with TestClient(app) as c:
+        c.post("/feeds", data={"url": "https://example.com/feed.xml"}, follow_redirects=False)
+        _insert_item(1, "g1", auth=None, fetch_status="teaser")
+        page = c.get("/feeds/1").text
+
+    status = page[page.index("<h2>Status</h2>"):]
+    assert 'class="info-btn"' in status and 'aria-controls="fs-1-1"' in status
+    assert '<span class="info-box" id="fs-1-1" role="note">' in status
+    ids = re.findall(r'\bid="([^"]+)"', page)
+    assert len(ids) == len(set(ids))

@@ -410,6 +410,37 @@ def test_settings_page_shows_warn_defaults():
     assert 'name="warn_hard_at" min="1" value="180"' in page
 
 
+def test_settings_page_has_jump_nav_info_buttons_and_all_fields():
+    with TestClient(app) as c:
+        page = c.get("/settings").text
+
+    # jump nav links to every section, and each target id exists
+    for section in ("ai", "keys", "polling", "filters", "paywall"):
+        assert f'href="#{section}"' in page
+        assert f'id="{section}"' in page
+
+    # info buttons: real buttons, collapsed, pointing at an element that exists
+    buttons = re.findall(r'<button type="button" class="info-btn"[^>]*>', page)
+    assert buttons
+    for tag in buttons:
+        assert 'aria-expanded="false"' in tag
+        target = re.search(r'aria-controls="([^"]+)"', tag).group(1)
+        assert f'id="{target}"' in page
+    assert "Leave a field blank to go back to the default (100 / 180)" in page
+
+    for name in (
+        "model", "fallback_model", "local_llm_url", "api_key", "openrouter_api_key",
+        "poll_minutes", "items_per_feed", "warn_at", "warn_hard_at", "full_text",
+        "respect_language", "filter_ads", "ad_title_patterns", "ad_keep_patterns",
+        "cookies_text", "cookies",
+    ):
+        assert f'name="{name}"' in page
+    assert 'action="/settings"' in page
+    assert 'action="/settings/cookies"' in page
+    assert 'formaction="/settings/test"' in page
+    assert "Accessing Pay-Walled Content" in page
+
+
 def test_settings_page_shows_version_with_release_link(monkeypatch):
     monkeypatch.setattr(pintxos, "__version__", "26.09.1")
     with TestClient(app) as c:

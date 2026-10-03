@@ -1,142 +1,236 @@
 {% extends "base.html" %}
 {% block title %}Settings · Pintxøs{% endblock %}
+{% block head %}
+<style>
+  /* Design plan: Settings
+     Same language as Stats: white cards, 1px --border, 10px radius, no shadows, 1.5rem padding
+     (1rem on phones), --accent as the only colour (jump nav hover, primary button).
+     Hierarchy by scale: card title 1rem/600, field label body weight 500, help 0.875rem muted.
+     Layout:  Settings
+              AI model | API keys | Polling | Filters | Paywall   (sticky on desktop)
+              [card: AI model] [card: API keys] [card: Polling] [card: Filters]  (one form, Save + Test)
+              [card: Paywall] (own form)   version
+     Principle: label, control and at most one short line; everything longer sits behind the info button. */
+  .set-nav { display: flex; gap: 0.25rem; flex-wrap: nowrap; overflow-x: auto; margin: 0 0 1.25rem; padding: 0.5rem 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+  .set-nav a { flex: none; padding: 0.25rem 0.75rem; border-radius: 999px; color: var(--text-muted); text-decoration: none; font-size: 0.875rem; }
+  .set-nav a:hover, .set-nav a:focus-visible { color: var(--accent); background: #eef2ff; }
+  @media (min-width: 720px) { .set-nav { position: sticky; top: 0; z-index: 10; } }
+  @media (max-width: 719px) { .set-nav { flex-wrap: wrap; overflow-x: visible; } }
+
+  .settings-form { display: block; }
+  .set-card { display: block; margin: 0 0 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: 10px; min-width: 0; scroll-margin-top: 4.5rem; }
+  @media (min-width: 720px) { .set-card { padding: 1.5rem; } }
+  .set-card h2 { font-size: 1rem; font-weight: 600; margin: 0 0 1rem; padding: 0; border: 0; }
+  .set-card .field { margin-bottom: 1.25rem; }
+  .set-card .field:last-child { margin-bottom: 0; }
+  .set-card .field .info-anchor { margin-bottom: 0.3rem; }
+  .set-card .field .info-anchor label { margin: 0; }
+  .set-card .field-checkbox .info-anchor { margin-bottom: 0; }
+  .set-grid { display: grid; gap: 1.25rem 1.5rem; grid-template-columns: 1fr; margin-bottom: 1.25rem; }
+  @media (min-width: 720px) { .set-grid { grid-template-columns: 1fr 1fr; } }
+  .set-grid .field { margin-bottom: 0; }
+  .set-actions { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 1rem; position: relative; }
+  .set-actions .info-anchor { position: static; }
+  .set-steps { margin: 0.5rem 0; padding-left: 1.25rem; font-size: 0.875rem; }
+  .set-card details { margin: 0 0 1rem; }
+  .set-card summary { cursor: pointer; font-size: 0.875rem; color: var(--accent); margin-bottom: 0.5rem; }
+  .set-domains { margin: 0 0 1rem; }
+  /* Presets table on phones: stack each preset (name + Use, cost, notes) at full width. */
+  @media (max-width: 600px) {
+    #ai table, #ai tbody, #ai tr, #ai td { display: block; width: 100%; }
+    #ai thead, #ai colgroup { display: none; }
+    #ai tr { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+    #ai tbody tr:last-child { border-bottom: 0; }
+    #ai td { padding: 0.1rem 0; border: 0; }
+    #ai td:nth-child(2) { color: var(--text-muted); }
+    #ai td:nth-child(2)::after { content: " per 100 articles"; }
+  }
+  .set-version { margin: 1.5rem 0 0; }
+</style>
+{% endblock %}
+{% macro info(id, what) %}<button type="button" class="info-btn" aria-label="More about {{ what }}" aria-expanded="false" aria-controls="{{ id }}">ℹ️</button><div class="info-box" id="{{ id }}" role="note">{{ caller() }}</div>{% endmacro %}
 {% block content %}
 <h1>Settings</h1>
-<form method="post" action="/settings">
-  <h2>AI</h2>
-  <div class="field">
-    <label for="model">Model</label>
-    <input type="text" id="model" name="model" value="{{ model }}">
-  </div>
-  {% include "_model_presets.html" %}
-  <div class="field">
-    <label for="fallback_model">Fallback model</label>
-    <input type="text" id="fallback_model" name="fallback_model" value="{{ fallback_model }}" {% if fallback_model_env %}disabled{% endif %}>
-    <div class="muted">Used automatically when the default model fails; empty means the built-in default.</div>
-    {% if fallback_model_env %}<div class="muted">Set by PINTXOS_FALLBACK_MODEL in the environment.</div>{% endif %}
-  </div>
-  <div class="field">
-    <label for="local_llm_url">Local LLM URL</label>
-    <input type="text" id="local_llm_url" name="local_llm_url" value="{{ local_llm_url }}" placeholder="http://127.0.0.1:11434/v1" {% if local_llm_url_env %}disabled{% endif %}>
-    <div class="muted">OpenAI-compatible endpoint (e.g. Ollama) used by models named <code>local:&lt;model&gt;</code>; no API key needed. Empty means the default.</div>
-    {% if local_llm_url_env %}<div class="muted">Set by PINTXOS_LOCAL_LLM_URL in the environment.</div>{% endif %}
-  </div>
-  <div class="field">
-    <label for="api_key">Anthropic API key</label>
-    {% if env_key_set %}
-      <input type="password" id="api_key" name="api_key" value="" disabled>
-      <div class="muted">Set via ANTHROPIC_API_KEY environment variable (recommended)</div>
-    {% else %}
-      <input type="password" id="api_key" name="api_key" value="" placeholder="{% if key_last4 %}unchanged{% else %}sk-...{% endif %}">
-      {% if key_last4 %}<div class="muted">Set (••••{{ key_last4 }})</div>{% endif %}
-    {% endif %}
-  </div>
-  <div class="field">
-    <label for="openrouter_api_key">OpenRouter API key</label>
-    {% if openrouter_env_key_set %}
-      <input type="password" id="openrouter_api_key" name="openrouter_api_key" value="" disabled>
-      <div class="muted">Set via OPENROUTER_API_KEY environment variable (recommended)</div>
-    {% else %}
-      <input type="password" id="openrouter_api_key" name="openrouter_api_key" value="" placeholder="{% if openrouter_key_last4 %}unchanged{% else %}sk-or-...{% endif %}">
-      {% if openrouter_key_last4 %}<div class="muted">Set (••••{{ openrouter_key_last4 }})</div>{% endif %}
-    {% endif %}
-  </div>
+<nav class="set-nav" aria-label="Settings sections">
+  <a href="#ai">AI model</a>
+  <a href="#keys">API keys</a>
+  <a href="#polling">Polling</a>
+  <a href="#filters">Filters</a>
+  <a href="#paywall">Paywall</a>
+</nav>
+<form method="post" action="/settings" class="settings-form">
+  <section class="set-card" id="ai" aria-labelledby="ai-h">
+    <h2 id="ai-h">AI model</h2>
+    <div class="field">
+      <label for="model">Model</label>
+      <input type="text" id="model" name="model" value="{{ model }}">
+    </div>
+    {% include "_model_presets.html" %}
+    <div class="field">
+      <div class="info-anchor">
+        <label for="fallback_model">Fallback model</label>
+        {% call info("info-fallback", "the fallback model") %}Used automatically when the default model fails; empty means the built-in default.{% endcall %}
+      </div>
+      <input type="text" id="fallback_model" name="fallback_model" value="{{ fallback_model }}" {% if fallback_model_env %}disabled{% endif %}>
+      {% if fallback_model_env %}<div class="muted">Set by PINTXOS_FALLBACK_MODEL in the environment.</div>{% endif %}
+    </div>
+    <div class="field">
+      <div class="info-anchor">
+        <label for="local_llm_url">Local LLM URL</label>
+        {% call info("info-local-llm", "the local LLM URL") %}OpenAI-compatible endpoint (e.g. Ollama) used by models named <code>local:&lt;model&gt;</code>; no API key needed. Empty means the default.{% endcall %}
+      </div>
+      <input type="text" id="local_llm_url" name="local_llm_url" value="{{ local_llm_url }}" placeholder="http://127.0.0.1:11434/v1" {% if local_llm_url_env %}disabled{% endif %}>
+      {% if local_llm_url_env %}<div class="muted">Set by PINTXOS_LOCAL_LLM_URL in the environment.</div>{% endif %}
+    </div>
+  </section>
 
-  <h2>Feed settings</h2>
-  <div class="field field-narrow">
-    <label for="poll_minutes">Poll interval (minutes)</label>
-    <input type="number" id="poll_minutes" name="poll_minutes" min="1" max="1440" value="{{ poll_minutes }}">
-  </div>
-  <div class="field field-narrow">
-    <label for="items_per_feed">Items per feed</label>
-    <input type="number" id="items_per_feed" name="items_per_feed" min="1" max="500" value="{{ items_per_feed }}">
-  </div>
-  <div class="field field-narrow">
-    <label for="warn_at">Warn at N summaries per feed per day</label>
-    <input type="number" id="warn_at" name="warn_at" min="1" value="{{ warn_at }}" {% if warn_env %}disabled{% endif %}>
-    {% if warn_env %}<div class="muted">Set by PINTXOS_WARN_AT in the environment.</div>{% endif %}
-  </div>
-  <div class="field field-narrow">
-    <label for="warn_hard_at">Strong warning at</label>
-    <input type="number" id="warn_hard_at" name="warn_hard_at" min="1" value="{{ warn_hard_at }}" {% if warn_hard_env %}disabled{% endif %}>
-    {% if warn_hard_env %}<div class="muted">Set by PINTXOS_WARN_HARD_AT in the environment.</div>{% endif %}
-  </div>
-  <div class="muted">The output feed gets a warning item once a feed has produced this many summaries in a day; the stronger wording starts at the second number. Leave a field blank to go back to the default (100 / 180).</div>
-  <div class="field field-checkbox">
-    <label><input type="checkbox" name="full_text" value="1" {% if full_text_on %}checked{% endif %} {% if full_text_env %}disabled{% endif %}> Include full article text</label>
-    <div class="muted">Appends the extracted article text below each summary in the output feed, after the Original line. Applies to every feed, including items already stored. Items polled before this option existed have no stored text.</div>
-    {% if full_text_env %}<div class="muted">Set by PINTXOS_FULL_TEXT in the environment.</div>{% endif %}
-  </div>
-  <div class="field field-checkbox">
-    <label><input type="checkbox" name="respect_language" value="1" {% if respect_language_on %}checked{% endif %} {% if respect_language_env %}disabled{% endif %}> Respect original language</label>
-    <div class="muted">Headline and summary are written in the article's language. Turn off to always summarize in English. Appended full text always stays in the original language. Feeds can override this on their Edit page.</div>
-    {% if respect_language_env %}<div class="muted">Set by PINTXOS_RESPECT_LANGUAGE in the environment.</div>{% endif %}
-  </div>
+  <section class="set-card" id="keys" aria-labelledby="keys-h">
+    <h2 id="keys-h">API keys</h2>
+    <div class="field">
+      <label for="api_key">Anthropic API key</label>
+      {% if env_key_set %}
+        <input type="password" id="api_key" name="api_key" value="" disabled>
+        <div class="muted">Set via ANTHROPIC_API_KEY environment variable (recommended)</div>
+      {% else %}
+        <input type="password" id="api_key" name="api_key" value="" placeholder="{% if key_last4 %}unchanged{% else %}sk-...{% endif %}">
+        {% if key_last4 %}<div class="muted">Set (••••{{ key_last4 }})</div>{% endif %}
+      {% endif %}
+    </div>
+    <div class="field">
+      <label for="openrouter_api_key">OpenRouter API key</label>
+      {% if openrouter_env_key_set %}
+        <input type="password" id="openrouter_api_key" name="openrouter_api_key" value="" disabled>
+        <div class="muted">Set via OPENROUTER_API_KEY environment variable (recommended)</div>
+      {% else %}
+        <input type="password" id="openrouter_api_key" name="openrouter_api_key" value="" placeholder="{% if openrouter_key_last4 %}unchanged{% else %}sk-or-...{% endif %}">
+        {% if openrouter_key_last4 %}<div class="muted">Set (••••{{ openrouter_key_last4 }})</div>{% endif %}
+      {% endif %}
+    </div>
+  </section>
 
-  <h2>Content filters</h2>
-  <h3>Ads</h3>
-  <div class="field field-checkbox">
-    <label><input type="checkbox" name="filter_ads" value="1" {% if filter_ads_on %}checked{% endif %} {% if filter_ads_env %}disabled{% endif %}> Filter out ads and coupon posts</label>
-    <div class="muted">Entries tagged coupons, deals, sales events or sponsored, or titled like "Promo Codes: 40% Off", "Labor Day sale" or "save up to 50%", are skipped before summarizing. Obvious news headlines (a stock sale, a lawsuit, fraud) are kept.</div>
-    {% if filter_ads_env %}<div class="muted">Set by PINTXOS_FILTER_ADS in the environment.</div>{% endif %}
-  </div>
-  <h3>Extra title patterns</h3>
-  <div class="field">
-    <label for="ad_title_patterns">One regex per line</label>
-    <textarea id="ad_title_patterns" name="ad_title_patterns" rows="4" class="mono" {% if patterns_env %}disabled{% endif %}>{{ ad_title_patterns }}</textarea>
-    <div class="muted">Case-insensitive. Example: best .* deals</div>
-    {% if patterns_env %}<div class="muted">Set by PINTXOS_AD_TITLE_PATTERNS in the environment.</div>{% endif %}
-  </div>
-  <h3>Keep patterns</h3>
-  <div class="field">
-    <label for="ad_keep_patterns">One regex per line</label>
-    <textarea id="ad_keep_patterns" name="ad_keep_patterns" rows="4" class="mono" {% if keep_patterns_env %}disabled{% endif %}>{{ ad_keep_patterns }}</textarea>
-    <div class="muted">Case-insensitive. Titles matching any of these are never filtered, even by the built-in block rules. Adds to the built-in keep rules.</div>
-    {% if keep_patterns_env %}<div class="muted">Set by PINTXOS_AD_KEEP_PATTERNS in the environment.</div>{% endif %}
-  </div>
+  <section class="set-card" id="polling" aria-labelledby="polling-h">
+    <h2 id="polling-h">Polling and feeds</h2>
+    <div class="set-grid">
+      <div class="field field-narrow">
+        <label for="poll_minutes">Poll interval (minutes)</label>
+        <input type="number" id="poll_minutes" name="poll_minutes" min="1" max="1440" value="{{ poll_minutes }}">
+      </div>
+      <div class="field field-narrow">
+        <label for="items_per_feed">Items per feed</label>
+        <input type="number" id="items_per_feed" name="items_per_feed" min="1" max="500" value="{{ items_per_feed }}">
+      </div>
+      <div class="field field-narrow">
+        <div class="info-anchor">
+          <label for="warn_at">Warn at N summaries per feed per day</label>
+          {% call info("info-warn", "the daily warning thresholds") %}The output feed gets a warning item once a feed has produced this many summaries in a day; the stronger wording starts at the second number. Leave a field blank to go back to the default (100 / 180).{% endcall %}
+        </div>
+        <input type="number" id="warn_at" name="warn_at" min="1" value="{{ warn_at }}" {% if warn_env %}disabled{% endif %}>
+        {% if warn_env %}<div class="muted">Set by PINTXOS_WARN_AT in the environment.</div>{% endif %}
+      </div>
+      <div class="field field-narrow">
+        <label for="warn_hard_at">Strong warning at</label>
+        <input type="number" id="warn_hard_at" name="warn_hard_at" min="1" value="{{ warn_hard_at }}" {% if warn_hard_env %}disabled{% endif %}>
+        {% if warn_hard_env %}<div class="muted">Set by PINTXOS_WARN_HARD_AT in the environment.</div>{% endif %}
+      </div>
+    </div>
+    <div class="field field-checkbox">
+      <div class="info-anchor">
+        <label><input type="checkbox" name="full_text" value="1" {% if full_text_on %}checked{% endif %} {% if full_text_env %}disabled{% endif %}> Include full article text</label>
+        {% call info("info-full-text", "full article text") %}Appends the extracted article text below each summary in the output feed, after the Original line. Applies to every feed, including items already stored. Items polled before this option existed have no stored text.{% endcall %}
+      </div>
+      {% if full_text_env %}<div class="muted">Set by PINTXOS_FULL_TEXT in the environment.</div>{% endif %}
+    </div>
+    <div class="field field-checkbox">
+      <div class="info-anchor">
+        <label><input type="checkbox" name="respect_language" value="1" {% if respect_language_on %}checked{% endif %} {% if respect_language_env %}disabled{% endif %}> Respect original language</label>
+        {% call info("info-language", "respecting the original language") %}Headline and summary are written in the article's language. Turn off to always summarize in English. Appended full text always stays in the original language. Feeds can override this on their Edit page.{% endcall %}
+      </div>
+      {% if respect_language_env %}<div class="muted">Set by PINTXOS_RESPECT_LANGUAGE in the environment.</div>{% endif %}
+    </div>
+  </section>
 
-  <button type="submit" class="btn-primary">Save</button>
-  <button type="submit" formaction="/settings/test" formmethod="post" formnovalidate>Test saved model</button>
-  <div class="muted">Tests the saved model and key; save first.</div>
+  <section class="set-card" id="filters" aria-labelledby="filters-h">
+    <h2 id="filters-h">Content filters</h2>
+    <div class="field field-checkbox">
+      <div class="info-anchor">
+        <label><input type="checkbox" name="filter_ads" value="1" {% if filter_ads_on %}checked{% endif %} {% if filter_ads_env %}disabled{% endif %}> Filter out ads and coupon posts</label>
+        {% call info("info-ads", "the ad filter") %}Entries tagged coupons, deals, sales events or sponsored, or titled like "Promo Codes: 40% Off", "Labor Day sale" or "save up to 50%", are skipped before summarizing. Obvious news headlines (a stock sale, a lawsuit, fraud) are kept.{% endcall %}
+      </div>
+      {% if filter_ads_env %}<div class="muted">Set by PINTXOS_FILTER_ADS in the environment.</div>{% endif %}
+    </div>
+    <div class="field">
+      <div class="info-anchor">
+        <label for="ad_title_patterns">Extra title patterns (one regex per line)</label>
+        {% call info("info-title-patterns", "extra title patterns") %}Case-insensitive. Example: best .* deals{% endcall %}
+      </div>
+      <textarea id="ad_title_patterns" name="ad_title_patterns" rows="4" class="mono" {% if patterns_env %}disabled{% endif %}>{{ ad_title_patterns }}</textarea>
+      {% if patterns_env %}<div class="muted">Set by PINTXOS_AD_TITLE_PATTERNS in the environment.</div>{% endif %}
+    </div>
+    <div class="field">
+      <div class="info-anchor">
+        <label for="ad_keep_patterns">Keep patterns (one regex per line)</label>
+        {% call info("info-keep-patterns", "keep patterns") %}Case-insensitive. Titles matching any of these are never filtered, even by the built-in block rules. Adds to the built-in keep rules.{% endcall %}
+      </div>
+      <textarea id="ad_keep_patterns" name="ad_keep_patterns" rows="4" class="mono" {% if keep_patterns_env %}disabled{% endif %}>{{ ad_keep_patterns }}</textarea>
+      {% if keep_patterns_env %}<div class="muted">Set by PINTXOS_AD_KEEP_PATTERNS in the environment.</div>{% endif %}
+    </div>
+  </section>
+
+  <div class="set-actions">
+    <button type="submit" class="btn-primary">Save</button>
+    <button type="submit" formaction="/settings/test" formmethod="post" formnovalidate>Test saved model</button>
+    <span class="info-anchor">{% call info("info-test", "testing the model") %}Tests the saved model and key; save first.{% endcall %}</span>
+  </div>
 </form>
 
-<h2 id="paywall">Accessing Pay-Walled Content</h2>
-<p>If a feed only carries a short teaser and the article itself is behind a paywall, Pintxøs cannot read the full text. For sites you subscribe to, you can give Pintxøs your own login: log in to the site in your browser, then hand Pintxøs the login cookie. Each site's cookie is only ever sent back to that same site.</p>
-<ol>
-  <li>Install the free, open-source <a href="https://cookie-editor.com" target="_blank" rel="noopener">Cookie-Editor</a> browser extension (Safari, Chrome, Firefox).</li>
-  <li>Open the website you want full articles from and log in.</li>
-  <li>Click the Cookie-Editor icon, choose <b>Export</b>, then <b>Netscape</b>. The cookies are now on your clipboard.</li>
-  <li>Paste them at the end of the box below and click <b>Save</b>. Repeat for each site.</li>
-</ol>
-<p class="muted">Pintxøs uses the new cookies on the next poll. On a feed's Edit page, "Retry N items" re-reads articles that could not be read in full (teasers, blocked pages, failed fetches) and summarizes items that have no summary. When the Feeds page shows "unreadable with login", it means either your cookies expired or those articles are outside your subscription; cookies only need re-exporting in the first case.</p>
-{% if not cookie_domains %}
-{% if cookie_file_exists %}
-<p class="muted">The saved cookies have all expired. Log in again and repeat the steps above.</p>
-{% else %}
-<p class="muted">No login saved yet.</p>
-{% endif %}
-{% else %}
-<p class="muted">Sites with a saved login:</p>
-{% for entry in cookie_domains %}
-<div class="muted">{{ entry.domain }} — {{ entry.count }} cookie{{ "s" if entry.count != 1 else "" }}, earliest expiry {{ entry.expires or "session" }}{% if entry.expires and entry.expires <= cookie_soon %} (expires soon){% endif %}</div>
-{% endfor %}
-{% endif %}
-
-<form method="post" action="/settings/cookies" enctype="multipart/form-data">
-  <div class="field">
-    <label for="cookies_text">Saved cookies</label>
-    <textarea id="cookies_text" name="cookies_text" rows="12" class="mono">{{ cookies_text }}</textarea>
-    <div class="muted">Shown in plain text: anyone who can open this page can read these cookies. Clear the box and save to remove them.</div>
+<section class="set-card" id="paywall" aria-labelledby="paywall-h">
+  <h2 id="paywall-h">Accessing Pay-Walled Content</h2>
+  <p class="muted">Give Pintxøs your own login for sites you subscribe to; each cookie is only sent back to its own site.</p>
+  <details>
+    <summary>How to export cookies</summary>
+    <p class="muted">If a feed only carries a short teaser and the article itself is behind a paywall, Pintxøs cannot read the full text. For sites you subscribe to, you can give Pintxøs your own login: log in to the site in your browser, then hand Pintxøs the login cookie. Each site's cookie is only ever sent back to that same site.</p>
+    <ol class="set-steps">
+      <li>Install the free, open-source <a href="https://cookie-editor.com" target="_blank" rel="noopener">Cookie-Editor</a> browser extension (Safari, Chrome, Firefox).</li>
+      <li>Open the website you want full articles from and log in.</li>
+      <li>Click the Cookie-Editor icon, choose <b>Export</b>, then <b>Netscape</b>. The cookies are now on your clipboard.</li>
+      <li>Paste them at the end of the box below and click <b>Save</b>. Repeat for each site.</li>
+    </ol>
+    <p class="muted">Pintxøs uses the new cookies on the next poll. On a feed's Edit page, "Retry N items" re-reads articles that could not be read in full (teasers, blocked pages, failed fetches) and summarizes items that have no summary. When the Feeds page shows "unreadable with login", it means either your cookies expired or those articles are outside your subscription; cookies only need re-exporting in the first case.</p>
+  </details>
+  {% if not cookie_domains %}
+  {% if cookie_file_exists %}
+  <p class="muted">The saved cookies have all expired. Log in again and repeat the steps under "How to export cookies".</p>
+  {% else %}
+  <p class="muted">No login saved yet.</p>
+  {% endif %}
+  {% else %}
+  <p class="muted" style="margin-bottom:.25rem">Sites with a saved login:</p>
+  <div class="set-domains">
+  {% for entry in cookie_domains %}
+  <div class="muted">{{ entry.domain }} — {{ entry.count }} cookie{{ "s" if entry.count != 1 else "" }}, earliest expiry {{ entry.expires or "session" }}{% if entry.expires and entry.expires <= cookie_soon %} (expires soon){% endif %}</div>
+  {% endfor %}
   </div>
-  <div class="field">
-    <label for="cookies">…or upload a cookies.txt file</label>
-    <input type="file" id="cookies" name="cookies">
-    <div class="muted">Stored as <code>{{ cookie_file }}</code>.</div>
-  </div>
-  <button type="submit" class="btn-primary">Save</button>
-</form>
+  {% endif %}
 
-<p class="muted">
+  <form method="post" action="/settings/cookies" enctype="multipart/form-data" class="settings-form">
+    <div class="field">
+      <div class="info-anchor">
+        <label for="cookies_text">Saved cookies</label>
+        {% call info("info-cookies-text", "removing saved cookies") %}Clear the box and save to remove them.{% endcall %}
+      </div>
+      <textarea id="cookies_text" name="cookies_text" rows="12" class="mono">{{ cookies_text }}</textarea>
+      <div class="muted">Shown in plain text: anyone who can open this page can read these cookies.</div>
+    </div>
+    <div class="field">
+      <label for="cookies">…or upload a cookies.txt file</label>
+      <input type="file" id="cookies" name="cookies">
+      <div class="muted">Stored as <code>{{ cookie_file }}</code>.</div>
+    </div>
+    <button type="submit" class="btn-primary">Save</button>
+  </form>
+</section>
+
+<p class="muted set-version">
   {% if version != "dev" %}
   <a href="https://github.com/janw76/pintxos/releases/tag/v{{ version }}">Pintxos {{ version }}</a>
   {% else %}

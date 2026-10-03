@@ -155,8 +155,6 @@
     .msg { color: var(--success); background: #f2f9f2; border-color: #cfe6cf; }
     .error { color: var(--danger); font-size: 0.75rem; }
     .muted { color: var(--text-muted); font-size: 0.875rem; overflow-wrap: anywhere; }
-    .info { cursor: help; }
-    .info-icon { font-size: 0.8em; }
     /* Every URL on the site is set the same way: mono, 0.75rem. Source URLs break anywhere;
        the output URL stays on one line and ellipsises instead (see .output-wrap below). */
     .url, .output-url { font-family: var(--mono); font-size: 0.75rem; }
@@ -251,6 +249,11 @@
     .set-card legend.info-anchor { width: 100%; }
     .set-card details { margin: 0 0 1rem; }
     .set-card summary { cursor: pointer; font-size: 0.875rem; color: var(--accent); margin-bottom: 0.5rem; }
+    /* Fetch-status help: a floating box like Settings, sized to its text; in the table it grows leftwards from the ℹ️ so it never passes the right edge. On phones the Status cell is a few characters wide and the viewport edges are close, so the box is a fixed sheet at the bottom of the screen instead (fixed boxes escape .table-wrap's overflow clip). */
+    .fetch-status .info-anchor { display: inline-flex; }
+    .fetch-status .info-box { width: max-content; max-width: min(26rem, 90vw); }
+    @media (min-width: 760px) { .table-wrap { overflow: visible; } td .fetch-status .info-box { left: auto; right: 0; } }
+    @media (max-width: 759px) { .fetch-status .info-box { position: fixed; left: 1rem; right: 1rem; top: auto; bottom: 1rem; width: auto; max-width: none; } }
   </style>
 </head>
 <body>
